@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Start Bonsai 27B ternary on the PrismML llama.cpp fork.
+# Env: LLM_HOME (default ~/local-llm), BONSAI_PORT (8080), BONSAI_CTX (32768)
+set -euo pipefail
+
+LLM_HOME="${LLM_HOME:-$HOME/local-llm}"
+SERVER="$LLM_HOME/llama.cpp/build/bin/llama-server"
+MODEL="$LLM_HOME/models/Ternary-Bonsai-27B-Q2_0.gguf"
+
+[[ -x "$SERVER" ]] || { echo "llama-server not found at $SERVER — run setup.sh --model bonsai" >&2; exit 1; }
+[[ -f "$MODEL"  ]] || { echo "model not found at $MODEL — run setup.sh --model bonsai" >&2; exit 1; }
+
+exec "$SERVER" -m "$MODEL" --port "${BONSAI_PORT:-8080}" -ngl 99 -c "${BONSAI_CTX:-32768}" --alias bonsai

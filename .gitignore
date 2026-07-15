@@ -1,0 +1,10 @@
+*.gguf
+bench/out_*.txt
+bench/results.json
+bench/bench_run*.log
+bench/_gen_test.py
+bench/_bonsai_test.py
+__pycache__/
+.pytest_cache/
+*.log
+*.pid

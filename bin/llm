@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""Send a prompt to a local LLM subcontractor and print the reply to stdout.
+
+Usage:
+  echo "prompt" | llm -m qwen
+  llm -m bonsai "Write a slugify function in Python. Output only code."
+  llm -m qwen -s "You output only JSON." < input.txt
+
+Backends (override with env vars):
+  qwen    Ollama native API      LLM_QWEN_URL   (default http://localhost:11434)
+                                 LLM_QWEN_MODEL (default qwen3.6:27b)
+  bonsai  llama-server OpenAI API LLM_BONSAI_URL (default http://localhost:8080)
+
+Thinking is disabled on both backends — these are thinking models and would
+otherwise burn the whole token budget on reasoning.
+"""
+import argparse
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.request
+
+BACKENDS = {
+    "qwen": {
+        "api": "ollama",
+        "url": os.environ.get("LLM_QWEN_URL", "http://localhost:11434"),
+        "model": os.environ.get("LLM_QWEN_MODEL", "qwen3.6:27b"),
+        "start_hint": "ollama serve   (then: ollama pull qwen3.6:27b)",
+    },
+    "bonsai": {
+        "api": "openai",
+        "url": os.environ.get("LLM_BONSAI_URL", "http://localhost:8080"),
+        "model": "bonsai",
+        "start_hint": "bin/serve-bonsai (in this repo)",
+    },
+}
+
+DEFAULT_SYSTEM = ("You are a precise coding assistant. Follow output format "
+                  "instructions exactly. Do not think step by step; answer directly.")
+
+
+def request(cfg, system, prompt, temperature, max_tokens, timeout):
+    messages = [{"role": "system", "content": system},
+                {"role": "user", "content": prompt}]
+    if cfg["api"] == "ollama":
+        url = cfg["url"] + "/api/chat"
+        payload = {"model": cfg["model"], "messages": messages, "stream": False,
+                   "think": False,
+                   "options": {"temperature": temperature, "num_predict": max_tokens,
+                               "num_ctx": int(os.environ.get("LLM_NUM_CTX", 16384))}}
+    else:
+        url = cfg["url"] + "/v1/chat/completions"
+        payload = {"model": cfg["model"], "messages": messages,
+                   "temperature": temperature, "max_tokens": max_tokens,
+                   "chat_template_kwargs": {"enable_thinking": False}}
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(),
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        resp = json.load(r)
+    if cfg["api"] == "ollama":
+        return resp["message"]["content"]
+    return resp["choices"][0]["message"]["content"]
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("-m", "--model", choices=sorted(BACKENDS),
+                    default=os.environ.get("LLM_DEFAULT", "qwen"))
+    ap.add_argument("-s", "--system", default=DEFAULT_SYSTEM)
+    ap.add_argument("-t", "--temperature", type=float, default=0.2)
+    ap.add_argument("--max-tokens", type=int, default=4000)
+    ap.add_argument("--timeout", type=int, default=1800)
+    ap.add_argument("prompt", nargs="*", help="prompt text (reads stdin if omitted)")
+    args = ap.parse_args()
+
+    prompt = " ".join(args.prompt) if args.prompt else sys.stdin.read()
+    if not prompt.strip():
+        ap.error("empty prompt")
+
+    cfg = BACKENDS[args.model]
+    try:
+        text = request(cfg, args.system, prompt, args.temperature,
+                       args.max_tokens, args.timeout)
+    except (urllib.error.URLError, ConnectionError) as e:
+        sys.stderr.write(
+            "cannot reach {} backend at {} ({})\nstart it with: {}\n".format(
+                args.model, cfg["url"], e, cfg["start_hint"]))
+        sys.exit(2)
+
+    # Belt and braces: drop any inline reasoning that slipped through.
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
+    sys.stdout.write(text + ("\n" if not text.endswith("\n") else ""))
+
+
+if __name__ == "__main__":
+    main()
