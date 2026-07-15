@@ -17,14 +17,20 @@ BENCH = Path(__file__).parent
 
 import os
 
-MODELS = {
-    "qwen3.6-27b-q4": {
-        "url": os.environ.get("LLM_QWEN_URL", "http://localhost:11434") + "/api/chat",
-        "model": os.environ.get("LLM_QWEN_MODEL", "qwen3.6:27b"), "api": "ollama"},
-    "bonsai-27b-ternary": {
+# Ollama models to bench: comma-separated names in BENCH_OLLAMA_MODELS
+# (default "qwen3.6:27b"). Set BENCH_BONSAI=1 to also bench a Bonsai
+# llama-server at LLM_BONSAI_URL.
+MODELS = {}
+_ollama_base = os.environ.get("LLM_QWEN_URL", "http://localhost:11434")
+for _name in os.environ.get("BENCH_OLLAMA_MODELS", "qwen3.6:27b").split(","):
+    _name = _name.strip()
+    if _name:
+        MODELS[_name.replace(":", "-").replace("/", "-")] = {
+            "url": _ollama_base + "/api/chat", "model": _name, "api": "ollama"}
+if os.environ.get("BENCH_BONSAI") == "1":
+    MODELS["bonsai-27b-ternary"] = {
         "url": os.environ.get("LLM_BONSAI_URL", "http://localhost:8080") + "/v1/chat/completions",
-        "model": "bonsai", "api": "openai"},
-}
+        "model": "bonsai", "api": "openai"}
 
 TARGET_SRC = (BENCH / "target.py").read_text()
 LOG_SRC = (BENCH / "app.log").read_text()

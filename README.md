@@ -61,6 +61,20 @@ echo "Write a Python one-liner that reverses a string." | ./bin/llm -m qwen
 
 Bonsaiの失敗はケアレスミス型(算数ミス・import忘れ)で、まさにゲートで機械的に弾けるタイプでした。
 
+### 追記: MoE版 `qwen3.6:35b-a3b` との比較(同環境)
+
+| タスク | qwen3.6:27b (dense) | qwen3.6:35b-a3b (MoE, 24GB) |
+|---|---|---|
+| pytest生成 | ✅ 16/16 (66s) | ❌ 15本中1本、期待値の算数ミス (15s) |
+| 仕様追従コード | ✅ 7/7 (18s) | ✅ 7/7 (2.4s) |
+| ログ→JSON抽出 | ✅ (36s) | ✅ (10s) |
+| 生成速度 | 9–10 tok/s | **24–40 tok/s** |
+
+アクティブパラメータ3BのMoEなので速度は2.5〜4倍。抽出・定型コードは同品質でした。
+**RAM 48GB以上なら「デフォルト35b-a3b、テスト生成だけ27b」の併用がおすすめ**です
+(`bin/llm -m qwen3.6:35b-a3b` のように `-m` へ任意のOllamaモデル名を渡せます)。
+インストールは `QWEN_MODEL=qwen3.6:35b-a3b ./setup.sh --model qwen` でも、`ollama pull` 直でも。
+
 ## リポジトリ構成
 
 ```

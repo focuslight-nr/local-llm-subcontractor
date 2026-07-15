@@ -3,13 +3,16 @@
 
 Usage:
   echo "prompt" | llm -m qwen
-  llm -m bonsai "Write a slugify function in Python. Output only code."
+  llm -m qwen3.6:35b-a3b "Write a slugify function in Python. Output only code."
   llm -m qwen -s "You output only JSON." < input.txt
+
+-m accepts an alias (below) or any Ollama model name directly.
 
 Backends (override with env vars):
   qwen    Ollama native API      LLM_QWEN_URL   (default http://localhost:11434)
                                  LLM_QWEN_MODEL (default qwen3.6:27b)
   bonsai  llama-server OpenAI API LLM_BONSAI_URL (default http://localhost:8080)
+  <other> treated as an Ollama model name (e.g. qwen3.6:35b-a3b)
 
 Thinking is disabled on both backends — these are thinking models and would
 otherwise burn the whole token budget on reasoning.
@@ -67,8 +70,9 @@ def request(cfg, system, prompt, temperature, max_tokens, timeout):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("-m", "--model", choices=sorted(BACKENDS),
-                    default=os.environ.get("LLM_DEFAULT", "qwen"))
+    ap.add_argument("-m", "--model", default=os.environ.get("LLM_DEFAULT", "qwen"),
+                    help="backend alias ({}) or any Ollama model name".format(
+                        "/".join(sorted(BACKENDS))))
     ap.add_argument("-s", "--system", default=DEFAULT_SYSTEM)
     ap.add_argument("-t", "--temperature", type=float, default=0.2)
     ap.add_argument("--max-tokens", type=int, default=4000)
@@ -80,7 +84,10 @@ def main():
     if not prompt.strip():
         ap.error("empty prompt")
 
-    cfg = BACKENDS[args.model]
+    cfg = BACKENDS.get(args.model)
+    if cfg is None:
+        cfg = {"api": "ollama", "url": BACKENDS["qwen"]["url"], "model": args.model,
+               "start_hint": "ollama serve   (then: ollama pull {})".format(args.model)}
     try:
         text = request(cfg, args.system, prompt, args.temperature,
                        args.max_tokens, args.timeout)

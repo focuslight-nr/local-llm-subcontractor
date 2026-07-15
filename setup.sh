@@ -9,7 +9,7 @@
 #   --yes     Non-interactive: accept all confirmations
 set -euo pipefail
 
-QWEN_MODEL="qwen3.6:27b"
+QWEN_MODEL="${QWEN_MODEL:-qwen3.6:27b}"   # override e.g. QWEN_MODEL=qwen3.6:35b-a3b (needs ~32GB+ RAM)
 BONSAI_REPO="https://github.com/PrismML-Eng/llama.cpp"
 BONSAI_GGUF_URL="https://huggingface.co/prism-ml/Ternary-Bonsai-27B-gguf/resolve/main/Ternary-Bonsai-27B-Q2_0.gguf"
 BONSAI_GGUF="Ternary-Bonsai-27B-Q2_0.gguf"
