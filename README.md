@@ -24,7 +24,7 @@ Claude Code が最終レビュー
 ## クイックスタート
 
 ```bash
-git clone <this-repo> && cd local-llm-subcontractor
+git clone https://github.com/focuslight-nr/local-llm-subcontractor.git && cd local-llm-subcontractor
 ./setup.sh                 # RAM量から自動でモデルを提案
 ./setup.sh --model qwen    # Qwen3.6-27B Q4 (Ollama, 17GB)
 ./setup.sh --model bonsai  # Bonsai 27B ternary (llama.cpp fork, 6.7GB)
