@@ -7,4 +7,5 @@ bench/_bonsai_test.py
 __pycache__/
 .pytest_cache/
 *.log
+!bench/app.log
 *.pid

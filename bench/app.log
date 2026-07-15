@@ -1,0 +1,16 @@
+2026-07-15T09:12:01Z INFO  api.server Starting server version=2.14.3 port=8443
+2026-07-15T09:12:02Z INFO  db.pool Connected to postgres host=db-prod-3 pool_size=20
+2026-07-15T09:14:11Z WARN  auth.jwt Token close to expiry user_id=u_8812 exp_in=42s
+2026-07-15T09:15:23Z ERROR api.orders POST /v1/orders failed status=500 err="insert or update on table \"orders\" violates foreign key constraint \"orders_customer_id_fkey\"" customer_id=c_99231 request_id=req_a81f
+2026-07-15T09:15:24Z INFO  api.orders retry scheduled request_id=req_a81f attempt=2
+2026-07-15T09:15:26Z ERROR api.orders POST /v1/orders failed status=500 err="insert or update on table \"orders\" violates foreign key constraint \"orders_customer_id_fkey\"" customer_id=c_99231 request_id=req_a81f
+2026-07-15T09:18:40Z INFO  worker.email Sent order confirmation email order_id=o_5521 duration_ms=182
+2026-07-15T09:21:05Z WARN  db.pool Slow query duration_ms=3210 query="SELECT * FROM order_items WHERE order_id = ANY($1)"
+2026-07-15T09:22:17Z ERROR worker.payments Payment capture failed provider=stripe code=card_declined order_id=o_5533 amount_cents=124900 request_id=req_c2d4
+2026-07-15T09:22:18Z INFO  worker.payments Marked order failed order_id=o_5533
+2026-07-15T09:25:00Z INFO  cron.cleanup Purged 1240 expired sessions duration_ms=88
+2026-07-15T09:26:44Z WARN  api.rate_limit Client throttled client_id=mobile-ios-2.9 requests=1205 window=60s
+2026-07-15T09:29:03Z ERROR db.pool Connection reset by peer host=db-prod-3 retries_left=2
+2026-07-15T09:29:04Z INFO  db.pool Reconnected host=db-prod-3 latency_ms=41
+2026-07-15T09:31:55Z ERROR api.orders POST /v1/orders failed status=500 err="insert or update on table \"orders\" violates foreign key constraint \"orders_customer_id_fkey\"" customer_id=c_99231 request_id=req_f7b0
+2026-07-15T09:33:20Z INFO  api.server Health check ok uptime_s=1279
