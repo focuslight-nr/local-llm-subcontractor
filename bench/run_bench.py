@@ -75,6 +75,11 @@ Log:
 }
 
 
+# Sampling temperature; override with BENCH_TEMPERATURE (some models, e.g. Meta's
+# Muse Glimmer, recommend 1.0 rather than a low deterministic value).
+TEMPERATURE = float(os.environ.get("BENCH_TEMPERATURE", "0.2"))
+
+
 def chat(cfg: dict, prompt: str, max_tokens: int = 4000) -> dict:
     messages = [
         {"role": "system", "content": "You are a precise coding assistant. Follow output format instructions exactly. Do not think step by step; answer directly."},
@@ -82,9 +87,9 @@ def chat(cfg: dict, prompt: str, max_tokens: int = 4000) -> dict:
     ]
     if cfg["api"] == "ollama":
         payload = {"model": cfg["model"], "messages": messages, "stream": False, "think": False,
-                   "options": {"temperature": 0.2, "num_predict": max_tokens, "num_ctx": 16384}}
+                   "options": {"temperature": TEMPERATURE, "num_predict": max_tokens, "num_ctx": 16384}}
     else:
-        payload = {"model": cfg["model"], "messages": messages, "temperature": 0.2, "max_tokens": max_tokens,
+        payload = {"model": cfg["model"], "messages": messages, "temperature": TEMPERATURE, "max_tokens": max_tokens,
                    "chat_template_kwargs": {"enable_thinking": False}}
     req = urllib.request.Request(cfg["url"], data=json.dumps(payload).encode(),
                                  headers={"Content-Type": "application/json"})
