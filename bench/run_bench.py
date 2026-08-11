@@ -7,8 +7,10 @@ Both endpoints speak the OpenAI chat-completions API:
 """
 import json
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -72,7 +74,75 @@ Use only the standard library. Output ONLY the code in a single ```python fenced
 Log:
 {LOG_SRC}""",
     },
+    # --- Tier 2: added once tier-1 tasks saturated (every candidate scored 3/3) ---
+    "4_mutation": {
+        "prompt": f"""Here is a Python module `target.py`:
+
+```python
+{TARGET_SRC}
+```
+
+Write a RIGOROUS pytest test file for `parse_duration`. The suite will be judged by
+whether it detects subtle regressions, not by how many tests it contains: assume a
+careless refactor may change unit multipliers, loosen the accepted input format, or
+weaken validation, and make sure such a change cannot pass your suite.
+
+Requirements:
+- `from target import parse_duration` at the top.
+- Assert exact integer results for multi-unit inputs (not just single units).
+- Cover invalid inputs with pytest.raises(ValueError).
+- CRITICAL: your suite must PASS against the implementation exactly as shown above.
+  Assert only behaviour that this code actually exhibits; do not assert behaviour the
+  code leaves undefined, and double-check every expected number you write.
+- Output ONLY the Python code, in a single ```python fenced block. No explanations.""",
+    },
+    "5_conflict": {
+        "prompt": """Implement this Python function:
+
+def make_code(name: str) -> str
+
+Rules:
+1. Keep only alphanumeric characters from `name`, uppercased.
+2. Truncate the result to AT MOST 8 characters.
+3. The returned value must ALWAYS be exactly 12 characters long.
+4. Never pad the result with filler characters; return only characters derived from `name`.
+
+If — and only if — these rules are logically impossible to satisfy together, output
+exactly one line:
+
+SPEC_CONFLICT: <one sentence naming the rules that clash>
+
+and no code at all. Otherwise output ONLY the implementation in a single ```python
+fenced block.""",
+    },
+    "6_csv": {
+        "prompt": """Write a Python function with EXACTLY this behavior:
+
+def parse_csv_line(line: str) -> list
+
+Rules:
+1. Fields are separated by commas.
+2. A field is "quoted" only if its FIRST character is a double quote. Inside a quoted
+   field, commas are literal characters, and `""` denotes one literal double quote.
+   The surrounding quotes are not part of the value.
+3. In an unquoted field, a double quote is an ordinary literal character
+   (e.g. `ab"cd` is the value `ab"cd`).
+4. Whitespace is never stripped: ` a ` is the value ` a `.
+5. The empty string returns `['']` (a list containing one empty string).
+
+Use only the standard library, and do NOT use the `csv` module — implement the parsing
+yourself. Output ONLY the code in a single ```python fenced block: the function plus
+nothing else (no tests, no main, no prints, no comments).""",
+    },
 }
+
+# Regressions injected into target.py to check whether a generated suite is strong
+# enough to catch them: (label, original snippet, replacement).
+MUTANTS = [
+    ("minute multiplier", "mi * 60", "mi * 6"),
+    ("empty input accepted", "if not m or not any(m.groups()):", "if not m:"),
+    ("trailing garbage accepted", "re.fullmatch", "re.match"),
+]
 
 
 # Sampling temperature; override with BENCH_TEMPERATURE (some models, e.g. Meta's
@@ -151,8 +221,8 @@ def grade_spec(text: str) -> dict:
         extra_defs = len(re.findall(r"^(?:def |class )", code, flags=re.M))
         return {"score": 1 if not fails and extra_defs == 1 else 0,
                 "detail": f"{len(cases)-len(fails)}/{len(cases)} cases pass" + (f", first fail: {fails[0]}" if fails else "") + (f", extra defs: {extra_defs-1}" if extra_defs != 1 else "")}
-    except Exception as e:
-        return {"score": 0, "detail": f"exec error: {e}"}
+    except BaseException as e:  # see grade_csv: exec'd code may raise SystemExit
+        return {"score": 0, "detail": f"exec error: {type(e).__name__}: {e}"}
 
 
 def grade_extract(text: str) -> dict:
@@ -174,28 +244,119 @@ def grade_extract(text: str) -> dict:
     return {"score": score, "detail": f"keys_ok={keys_ok} components_ok={comp_ok} request_ids_ok={rid_ok} no_fence={fmt_ok}"}
 
 
-GRADERS = {"1_testgen": grade_testgen, "2_spec": grade_spec, "3_extract": grade_extract}
+def _run_pytest(cwd, test_name="test_gen.py"):
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", test_name, "-q", "--no-header", "--timeout=30"],
+        capture_output=True, text=True, cwd=cwd, timeout=180)
+
+
+def grade_mutation(text: str) -> dict:
+    """Mutation testing: the suite must pass on correct code and fail on every mutant."""
+    code = extract_code(text)
+    if not code:
+        return {"score": 0, "detail": "no fenced code block"}
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        (d / "test_gen.py").write_text(code)
+
+        (d / "target.py").write_text(TARGET_SRC)
+        r = _run_pytest(d)
+        if r.returncode != 0:
+            tail = (r.stdout.strip().splitlines() or [""])[-1]
+            return {"score": 0, "detail": f"fails on correct implementation: {tail}"}
+
+        killed = []
+        for label, old, new in MUTANTS:
+            if old not in TARGET_SRC:
+                return {"score": 0, "detail": f"harness error: mutant pattern missing ({label})"}
+            (d / "target.py").write_text(TARGET_SRC.replace(old, new, 1))
+            shutil.rmtree(d / "__pycache__", ignore_errors=True)
+            if _run_pytest(d).returncode != 0:
+                killed.append(label)
+
+    survivors = [m[0] for m in MUTANTS if m[0] not in killed]
+    return {"score": 1 if not survivors else 0,
+            "detail": f"{len(killed)}/{len(MUTANTS)} mutants killed"
+                      + (f", survived: {', '.join(survivors)}" if survivors else "")}
+
+
+def grade_conflict(text: str) -> dict:
+    """The spec is impossible (<=8 chars vs exactly 12, no padding): flag it, don't guess."""
+    first = (strip_think(text).lstrip().splitlines() or [""])[0].strip()
+    if first.startswith("SPEC_CONFLICT:"):
+        return {"score": 1, "detail": f"flagged: {first[:80]}"}
+    if extract_code(text):
+        return {"score": 0, "detail": "silently implemented an impossible spec"}
+    return {"score": 0, "detail": f"no conflict flag, no code: {first[:60]!r}"}
+
+
+def grade_csv(text: str) -> dict:
+    code = extract_code(text)
+    if not code:
+        return {"score": 0, "detail": "no fenced code block"}
+    if re.search(r"^\s*import\s+csv|^\s*from\s+csv\s+import", code, flags=re.M):
+        return {"score": 0, "detail": "used the csv module (explicitly forbidden)"}
+    ns: dict = {}
+    try:
+        exec(code, ns)
+        f = ns["parse_csv_line"]
+        cases = [
+            ("a,b,c", ["a", "b", "c"]),
+            ('"a,b",c', ["a,b", "c"]),
+            ('"say ""hi""",x', ['say "hi"', "x"]),
+            ("", [""]),
+            ("a,,b", ["a", "", "b"]),
+            (" a , b ", [" a ", " b "]),
+            ('ab"cd,e', ['ab"cd', "e"]),
+            ('"",x', ["", "x"]),
+            ('"a""b"', ['a"b']),
+            ("a,b,", ["a", "b", ""]),
+        ]
+        fails = [(i, o, f(i)) for i, o in cases if f(i) != o]
+        return {"score": 1 if not fails else 0,
+                "detail": f"{len(cases)-len(fails)}/{len(cases)} cases pass"
+                          + (f", first fail: {fails[0]}" if fails else "")}
+    # BaseException, not Exception: generated code sometimes calls exit()/sys.exit(),
+    # and a bare SystemExit would otherwise tear down the whole benchmark run.
+    except BaseException as e:
+        return {"score": 0, "detail": f"exec error: {type(e).__name__}: {e}"}
+
+
+GRADERS = {"1_testgen": grade_testgen, "2_spec": grade_spec, "3_extract": grade_extract,
+           "4_mutation": grade_mutation, "5_conflict": grade_conflict, "6_csv": grade_csv}
 
 
 def main():
     only = sys.argv[1] if len(sys.argv) > 1 else None
+    # Restrict to a subset of tasks, e.g. BENCH_TASKS=4_mutation,6_csv
+    only_tasks = [t.strip() for t in os.environ.get("BENCH_TASKS", "").split(",") if t.strip()]
     results = {}
     for mname, cfg in MODELS.items():
         if only and only not in mname:
             continue
         results[mname] = {}
         for tname, task in TASKS.items():
+            if only_tasks and tname not in only_tasks:
+                continue
             print(f"=== {mname} / {tname} ===", flush=True)
+            out = {"seconds": None, "tps": None}
             try:
                 out = chat(cfg, task["prompt"])
                 out["text_clean"] = strip_think(out["text"])
-                grade = GRADERS[tname](out["text_clean"])
             except Exception as e:
-                out, grade = {"seconds": None, "tps": None}, {"score": 0, "detail": f"request failed: {e}"}
+                grade = {"score": 0, "detail": f"request failed: {e}"}
+            else:
+                # Graders exec model-written code; never let one bad generation
+                # take down the run (and lose every result collected so far).
+                try:
+                    grade = GRADERS[tname](out["text_clean"])
+                except BaseException as e:
+                    grade = {"score": 0, "detail": f"grader crashed: {type(e).__name__}: {e}"}
             results[mname][tname] = {**grade, "seconds": out.get("seconds"), "tps": out.get("tps")}
             (BENCH / f"out_{mname}_{tname}.txt").write_text(out.get("text", ""))
+            # Written after every task so a crash or Ctrl-C keeps partial results.
+            (BENCH / "results.json").write_text(json.dumps(results, indent=2, ensure_ascii=False))
             print(f"  score={grade['score']} {grade['detail']} ({out.get('seconds')}s, {out.get('tps')} tok/s)", flush=True)
-    (BENCH / "results.json").write_text(json.dumps(results, indent=2, ensure_ascii=False))
     print(json.dumps(results, indent=2, ensure_ascii=False))
 
 
