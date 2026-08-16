@@ -149,18 +149,32 @@ MUTANTS = [
 # Muse Glimmer, recommend 1.0 rather than a low deterministic value).
 TEMPERATURE = float(os.environ.get("BENCH_TEMPERATURE", "0.2"))
 
+# Thinking is off by default: these are thinking models, and left on they spend the
+# whole token budget reasoning and return nothing usable at subcontractor budgets.
+# Set BENCH_THINK=1 to measure a model in the mode its vendor recommends — raise
+# BENCH_MAX_TOKENS / BENCH_NUM_CTX too, since reasoning consumes the same budget.
+THINK = os.environ.get("BENCH_THINK") == "1"
+MAX_TOKENS = int(os.environ.get("BENCH_MAX_TOKENS", "4000"))
+NUM_CTX = int(os.environ.get("BENCH_NUM_CTX", "16384"))
 
-def chat(cfg: dict, prompt: str, max_tokens: int = 4000) -> dict:
+DIRECT_SYSTEM = ("You are a precise coding assistant. Follow output format "
+                 "instructions exactly. Do not think step by step; answer directly.")
+THINKING_SYSTEM = ("You are a precise coding assistant. Follow output format "
+                   "instructions exactly.")
+
+
+def chat(cfg: dict, prompt: str, max_tokens: int = None) -> dict:
+    max_tokens = max_tokens or MAX_TOKENS
     messages = [
-        {"role": "system", "content": "You are a precise coding assistant. Follow output format instructions exactly. Do not think step by step; answer directly."},
+        {"role": "system", "content": THINKING_SYSTEM if THINK else DIRECT_SYSTEM},
         {"role": "user", "content": prompt},
     ]
     if cfg["api"] == "ollama":
-        payload = {"model": cfg["model"], "messages": messages, "stream": False, "think": False,
-                   "options": {"temperature": TEMPERATURE, "num_predict": max_tokens, "num_ctx": 16384}}
+        payload = {"model": cfg["model"], "messages": messages, "stream": False, "think": THINK,
+                   "options": {"temperature": TEMPERATURE, "num_predict": max_tokens, "num_ctx": NUM_CTX}}
     else:
         payload = {"model": cfg["model"], "messages": messages, "temperature": TEMPERATURE, "max_tokens": max_tokens,
-                   "chat_template_kwargs": {"enable_thinking": False}}
+                   "chat_template_kwargs": {"enable_thinking": THINK}}
     req = urllib.request.Request(cfg["url"], data=json.dumps(payload).encode(),
                                  headers={"Content-Type": "application/json"})
     t0 = time.time()
@@ -168,12 +182,17 @@ def chat(cfg: dict, prompt: str, max_tokens: int = 4000) -> dict:
         resp = json.load(r)
     dt = time.time() - t0
     if cfg["api"] == "ollama":
-        text = resp["message"]["content"]
+        msg = resp["message"]
+        text = msg["content"]
+        # With think=true Ollama returns reasoning in a separate field.
+        think_chars = len(msg.get("thinking") or "")
         ntok = resp.get("eval_count", 0)
     else:
         text = resp["choices"][0]["message"]["content"]
+        think_chars = 0
         ntok = resp.get("usage", {}).get("completion_tokens", 0)
     return {"text": text, "seconds": round(dt, 1), "completion_tokens": ntok,
+            "think_chars": think_chars,
             "tps": round(ntok / dt, 1) if dt else None}
 
 
@@ -352,11 +371,13 @@ def main():
                     grade = GRADERS[tname](out["text_clean"])
                 except BaseException as e:
                     grade = {"score": 0, "detail": f"grader crashed: {type(e).__name__}: {e}"}
-            results[mname][tname] = {**grade, "seconds": out.get("seconds"), "tps": out.get("tps")}
+            results[mname][tname] = {**grade, "seconds": out.get("seconds"), "tps": out.get("tps"),
+                                     "think_chars": out.get("think_chars")}
             (BENCH / f"out_{mname}_{tname}.txt").write_text(out.get("text", ""))
             # Written after every task so a crash or Ctrl-C keeps partial results.
             (BENCH / "results.json").write_text(json.dumps(results, indent=2, ensure_ascii=False))
-            print(f"  score={grade['score']} {grade['detail']} ({out.get('seconds')}s, {out.get('tps')} tok/s)", flush=True)
+            think_note = f", think {out['think_chars']}ch" if out.get("think_chars") else ""
+            print(f"  score={grade['score']} {grade['detail']} ({out.get('seconds')}s, {out.get('tps')} tok/s{think_note})", flush=True)
     print(json.dumps(results, indent=2, ensure_ascii=False))
 
 
