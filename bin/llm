@@ -5,8 +5,14 @@ Usage:
   echo "prompt" | llm -m qwen
   llm -m qwen3.6:35b-a3b "Write a slugify function in Python. Output only code."
   llm -m qwen -s "You output only JSON." < input.txt
+  llm -m qwen3.8:27b --think < tricky_spec.md   # reason first, then answer
 
 -m accepts an alias (below) or any Ollama model name directly.
+
+Thinking is off by default: it costs several times the wall-clock and, at small
+output budgets, can consume the whole allowance before answering. Use --think for
+fiddly specs that direct answering gets wrong (it raises the token budget and
+temperature to match).
 
 Backends (override with env vars):
   qwen    Ollama native API      LLM_QWEN_URL   (default http://localhost:11434)
@@ -43,21 +49,26 @@ BACKENDS = {
 DEFAULT_SYSTEM = ("You are a precise coding assistant. Follow output format "
                   "instructions exactly. Do not think step by step; answer directly.")
 
+# With --think the model reasons before answering, so drop the "answer directly"
+# instruction that would otherwise fight the thinking phase.
+THINKING_SYSTEM = ("You are a precise coding assistant. Follow output format "
+                   "instructions exactly.")
 
-def request(cfg, system, prompt, temperature, max_tokens, timeout):
+
+def request(cfg, system, prompt, temperature, max_tokens, timeout, think=False):
     messages = [{"role": "system", "content": system},
                 {"role": "user", "content": prompt}]
     if cfg["api"] == "ollama":
         url = cfg["url"] + "/api/chat"
         payload = {"model": cfg["model"], "messages": messages, "stream": False,
-                   "think": False,
+                   "think": think,
                    "options": {"temperature": temperature, "num_predict": max_tokens,
                                "num_ctx": int(os.environ.get("LLM_NUM_CTX", 16384))}}
     else:
         url = cfg["url"] + "/v1/chat/completions"
         payload = {"model": cfg["model"], "messages": messages,
                    "temperature": temperature, "max_tokens": max_tokens,
-                   "chat_template_kwargs": {"enable_thinking": False}}
+                   "chat_template_kwargs": {"enable_thinking": think}}
     req = urllib.request.Request(url, data=json.dumps(payload).encode(),
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -73,12 +84,27 @@ def main():
     ap.add_argument("-m", "--model", default=os.environ.get("LLM_DEFAULT", "qwen"),
                     help="backend alias ({}) or any Ollama model name".format(
                         "/".join(sorted(BACKENDS))))
-    ap.add_argument("-s", "--system", default=DEFAULT_SYSTEM)
-    ap.add_argument("-t", "--temperature", type=float, default=0.2)
-    ap.add_argument("--max-tokens", type=int, default=4000)
+    ap.add_argument("-s", "--system", default=None,
+                    help="system prompt (defaults suit --think automatically)")
+    ap.add_argument("-t", "--temperature", type=float, default=None,
+                    help="sampling temperature (default 0.2, or 1.0 with --think)")
+    ap.add_argument("--think", action="store_true",
+                    help="let the model reason before answering: slower, but it "
+                         "solves fiddly specs that direct answering gets wrong")
+    ap.add_argument("--max-tokens", type=int, default=None,
+                    help="output cap (default 4000, or 12000 with --think, since "
+                         "reasoning draws from the same budget)")
     ap.add_argument("--timeout", type=int, default=1800)
     ap.add_argument("prompt", nargs="*", help="prompt text (reads stdin if omitted)")
     args = ap.parse_args()
+
+    # Thinking needs its own defaults; explicit flags still win.
+    if args.system is None:
+        args.system = THINKING_SYSTEM if args.think else DEFAULT_SYSTEM
+    if args.temperature is None:
+        args.temperature = 1.0 if args.think else 0.2
+    if args.max_tokens is None:
+        args.max_tokens = 12000 if args.think else 4000
 
     prompt = " ".join(args.prompt) if args.prompt else sys.stdin.read()
     if not prompt.strip():
@@ -90,7 +116,7 @@ def main():
                "start_hint": "ollama serve   (then: ollama pull {})".format(args.model)}
     try:
         text = request(cfg, args.system, prompt, args.temperature,
-                       args.max_tokens, args.timeout)
+                       args.max_tokens, args.timeout, args.think)
     except (urllib.error.URLError, ConnectionError) as e:
         sys.stderr.write(
             "cannot reach {} backend at {} ({})\nstart it with: {}\n".format(
