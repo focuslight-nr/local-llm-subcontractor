@@ -1,3 +1,19 @@
+<!-- knowledge-metadata: v1
+このファイルは検索/RAGでチャンク分割されても各セクションの文脈が失われないよう、
+見出しの直後に機械可読なメタデータをHTMLコメントで持たせています。表示には影響しません。
+
+  kind          record(過去の測定・出来事の記録) / directive(今こうしろ) / state(今こうなっている)
+  measured      測定日
+  revalidated   再検証日、または false(以後再検証していない)
+  status        current / superseded
+                — その節が示す「判断・推奨」が現在も有効か。
+                  測定値そのものは日付付きの記録なので失効しません。
+  superseded_by 判断を置き換えた節の見出し
+  subjects      対象モデル
+  verdict       その測定から下した判断
+  installed     そのモデルが現在このマシンに存在するか
+-->
+
 # local-llm-subcontractor
 
 Claude Code や Codex CLI の「下請け」としてローカルLLMを使い、トークン消費(=API課金)を減らすためのワンショット環境構築キットです。
@@ -23,6 +39,12 @@ Claude Code が最終レビュー
 
 ## クイックスタート
 
+<!-- meta
+kind: directive
+status: current
+note: --model bonsai は現役の選択肢。ただし本機には未インストール(RAM48GBのためqwenを選択)
+-->
+
 ```bash
 git clone https://github.com/focuslight-nr/local-llm-subcontractor.git && cd local-llm-subcontractor
 ./setup.sh                 # RAM量から自動でモデルを提案
@@ -39,6 +61,14 @@ echo "Write a Python one-liner that reverses a string." | ./bin/llm -m qwen
 
 ## どちらのモデルを選ぶか
 
+<!-- meta
+kind: directive
+status: current
+subjects: qwen3.6:27b, bonsai-27b-ternary
+basis: 公称値 + 実測ベンチ(2026-07-15)
+note: 選択基準はRAM。Bonsaiは8〜16GBマシン向けの現役の選択肢
+-->
+
 | | Qwen3.6-27B Q4 | Bonsai 27B 三値版 |
 |---|---|---|
 | 必要メモリ | ~17GB(実行時ピーク~20GB) | ~7GB(実行時ピーク~10GB) |
@@ -49,6 +79,16 @@ echo "Write a Python one-liner that reverses a string." | ./bin/llm -m qwen
 **RAM 32GB以上なら Qwen を推奨**。Bonsai は 8〜16GB マシンや常駐メモリを節約したい場合の選択肢です。
 
 ### 実測ベンチ(M4 Pro / 48GB, 2026-07-15)
+
+<!-- meta
+kind: record
+measured: 2026-07-15
+revalidated: false
+subjects: qwen3.6:27b, bonsai-27b-ternary
+verdict: 既定を qwen3.6:27b に採用
+status: current
+note: Bonsai列は2026-07-15の実測のまま。以降のベンチ更新では環境未セットアップのため再検証していない
+-->
 
 `bench/run_bench.py` による自動採点(タスク: pytest生成→実行 / 仕様追従コード / ログ→JSON抽出):
 
@@ -63,6 +103,16 @@ Bonsaiの失敗はケアレスミス型(算数ミス・import忘れ)で、まさ
 (Bonsai列は2026-07-15時点の実測のまま。以降のベンチ更新ではBonsai環境が未セットアップのため再検証していません。)
 
 ### 追記: MoE版 `qwen3.6:35b-a3b` との比較(同環境, 2026-07-25再検証)
+
+<!-- meta
+kind: record
+measured: 2026-07-25
+subjects: qwen3.6:27b, qwen3.6:35b-a3b
+verdict: 当時の推奨「既定 35b-a3b、テスト生成のみ 27b」
+status: superseded
+superseded_by: 第2段タスク(2026-08-11追加)と再評価
+note: 測定値は有効。推奨のみ第2段タスクの結果で覆り、既定は27bに戻した
+-->
 
 | タスク | qwen3.6:27b (dense) | qwen3.6:35b-a3b (MoE, 24GB) |
 |---|---|---|
@@ -85,6 +135,16 @@ Bonsaiの失敗はケアレスミス型(算数ミス・import忘れ)で、まさ
 再現手順: `BENCH_OLLAMA_MODELS=qwen3.6:27b,qwen3.6:35b-a3b python3 bench/run_bench.py`
 
 ### 採用: Ornith-1.5 35B を `--think` 枠に(2026-08-20)
+
+<!-- meta
+kind: record, directive
+measured: 2026-08-20
+subjects: ornith-1.5:35b
+verdict: --think 枠に採用。テスト生成には使わない(1/3)
+status: current
+installed: true
+note: 現在有効な --think 枠の根拠。報道の「Opus 4.8に匹敵」は397B版であり本節の35B版ではない
+-->
 
 Ornith製、MITライセンス。397B / 35B(MoE, アクティブ3B) / 9B の3サイズで、
 **報道の「Claude Opus 4.8に匹敵」(Terminal-Bench 86.1)は397B版**(242GB)の数字です。
@@ -115,6 +175,17 @@ qwen3.8:27bは25分、qwen3.6:27bは45分かかるので、**5〜9倍速い**。
 **テスト生成には使わない**という但し書き付きです。
 
 ### 思考モードで結論が変わる: Qwen3.8-27B(2026-08-15)
+
+<!-- meta
+kind: record
+measured: 2026-08-15
+subjects: qwen3.6:27b, qwen3.8:27b
+verdict: 既定は3.6据え置き / 当時の --think 枠は 3.8
+status: superseded
+superseded_by: 採用: Ornith-1.5 35B を `--think` 枠に(2026-08-20)
+installed: qwen3.8:27b = false(2026-08-20に削除)
+note: 「既定は3.6」は現在も有効。差し替わったのは --think 枠の指定のみ
+-->
 
 同じ27B級の後継世代(要 Ollama 0.32.13 以上。0.32.9 では `pull` が412で弾かれます)。
 **思考モードの有無で結論が反転した**ので、2×2で計測しました。
@@ -149,6 +220,17 @@ qwen3.8:27bは25分、qwen3.6:27bは45分かかるので、**5〜9倍速い**。
 
 ### 検討して見送ったモデル: Meta Muse Glimmer 30B(2026-08-11)
 
+<!-- meta
+kind: record
+measured: 2026-08-11
+subjects: muse-glimmer-30b
+verdict: 不採用(当時の理由: プレリリース版Ollama必須 / タスク飽和 / 強みが本キットの非対象領域)
+status: superseded
+superseded_by: 再評価(2026-08-13, Ollama 0.32.9 安定版)
+installed: false
+note: 不採用の結論は維持。理由の1点目(運用制約)のみ2026-08-13に解消済み
+-->
+
 Metaのエージェント特化モデル(Apache 2.0, 128K, マルチモーダル)。公式ベンチが
 Qwen3.6-27Bとの直接比較を載せており、下請け候補として実測しました。
 
@@ -172,6 +254,16 @@ temperature 1.0 でも劣化しません(この検証のため `BENCH_TEMPERATUR
 
 #### 再評価(2026-08-13, Ollama 0.32.9 安定版)
 
+<!-- meta
+kind: record
+measured: 2026-08-13
+subjects: qwen3.6:27b, muse-glimmer-30b
+verdict: 不採用を維持(理由は運用制約から所要時間へ変更。品質は互角)
+status: current
+installed: false
+note: 冗長性が変わらない限り再テスト不要
+-->
+
 Ollamaの安定版が0.32.9になり、**プレリリース版なしで常用サーバーのまま動く**ようになったため、
 第2段タスクを含む全6タスクで測り直しました。
 
@@ -193,6 +285,15 @@ tok/s はほぼ同等ながら生成量が多く、実時間で約2倍かかり�
 両者を分けるにはさらに難しいタスクが要ります。
 
 ### 第2段タスク(2026-08-11追加)と再評価
+
+<!-- meta
+kind: record, directive
+measured: 2026-08-11
+subjects: qwen3.6:27b, qwen3.6:35b-a3b
+verdict: 既定 = qwen3.6:27b / 35b-a3b は要約・抽出などの一括処理に限定
+status: current
+note: 現在有効な既定モデルの根拠。2026-07-25の推奨を上書きしている
+-->
 
 上記3タスクは候補モデルが軒並み満点になり判別力を失ったため、難度の高い3タスクを追加しました:
 
@@ -242,6 +343,15 @@ BENCH_THINK=1 BENCH_TEMPERATURE=1.0 BENCH_MAX_TOKENS=12000 BENCH_NUM_CTX=32768 \
 
 ## なぜ「エージェント」ではなく「下請け」なのか(実験記録)
 
+<!-- meta
+kind: record, directive
+measured: 2026-07-17
+subjects: LM Studio Bionic 1.0 + qwen3.6:27b
+verdict: 自律エージェント化しない。ローカルモデルに書き込み権限を渡さずゲートを外側で回す
+status: current
+note: bin/llm が stdin→stdout の単純なパイプである理由
+-->
+
 ローカルLLMを頭脳にした自律エージェント(LM Studio Bionic 1.0 + qwen3.6-27B)と
 本キットの構成で、同じテスト生成タスク(実在OSSの4関数、同一仕様書)を比較しました(2026-07-17, M4 Pro 48GB):
 
@@ -275,6 +385,12 @@ docs/codex.md       # Codex CLI への組み込み手順(AGENTS.mdスニペッ�
 インストール先はデフォルト `~/local-llm`(`--dir` か環境変数 `LLM_HOME` で変更可)。モデル本体・ビルド成果物はリポジトリ外に置かれます。
 
 ## 重要な注意
+
+<!-- meta
+kind: directive
+status: current
+note: 運用上の必須事項。特定の測定日に紐づかない
+-->
 
 - **thinkingの無効化**: Qwen3.6もBonsaiもthinkingモデルです。無効化しないと思考だけでトークン上限を使い切り、本体の回答が届きません。`bin/llm` は両バックエンドで無効化済み(Ollama: `think: false` / llama-server: `chat_template_kwargs.enable_thinking: false`)。
 - **Bonsaiは本家llama.cpp/Ollamaでは動きません**。独自量子化(Q2_0_g128)のため、PrismML公式のllama.cppフォーク(github.com/PrismML-Eng/llama.cpp)のビルドが必要です。モデル配布元が案内する正規ランタイムですが、本家よりコミュニティ監査が薄い第三者コードをビルド・実行することは理解した上で選んでください(`setup.sh` も確認を求めます)。
