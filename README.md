@@ -18,7 +18,7 @@
 
 Claude Code や Codex CLI の「下請け」としてローカルLLMを使い、トークン消費(=API課金)を減らすためのワンショット環境構築キットです。
 
-**EN**: One-shot setup for running a local LLM (Qwen3.6-27B via Ollama, or PrismML's Bonsai 27B ternary via their llama.cpp fork) as a cheap "subcontractor" for coding agents like Claude Code / Codex CLI. The orchestrator LLM writes a spec, the local model drafts the code, a local test/lint gate filters the output, and the orchestrator only reviews code that already passes. See `docs/` for agent integration.
+**EN**: One-shot setup for running a local LLM (Qwen3.6-27B via Ollama, or PrismML's Bonsai 2 27B ternary via their llama.cpp fork) as a cheap "subcontractor" for coding agents like Claude Code / Codex CLI. The orchestrator LLM writes a spec, the local model drafts the code, a local test/lint gate filters the output, and the orchestrator only reviews code that already passes. See `docs/` for agent integration.
 
 ## コンセプト
 
@@ -49,7 +49,7 @@ note: --model bonsai は現役の選択肢。ただし本機には未インス�
 git clone https://github.com/focuslight-nr/local-llm-subcontractor.git && cd local-llm-subcontractor
 ./setup.sh                 # RAM量から自動でモデルを提案
 ./setup.sh --model qwen    # Qwen3.6-27B Q4 (Ollama, 17GB)
-./setup.sh --model bonsai  # Bonsai 27B ternary (llama.cpp fork, 6.7GB)
+./setup.sh --model bonsai  # Bonsai 2 27B ternary (llama.cpp fork, 6GB)
 ./setup.sh --model both
 ```
 
@@ -64,17 +64,18 @@ echo "Write a Python one-liner that reverses a string." | ./bin/llm -m qwen
 <!-- meta
 kind: directive
 status: current
-subjects: qwen3.6:27b, bonsai-27b-ternary
-basis: 公称値 + 実測ベンチ(2026-07-15)
+subjects: qwen3.6:27b, bonsai-2-27b-ternary
+basis: 公称値 + 実測ベンチ(2026-09-18 に Bonsai 2 へ更新)
 note: 選択基準はRAM。Bonsaiは8〜16GBマシン向けの現役の選択肢
 -->
 
-| | Qwen3.6-27B Q4 | Bonsai 27B 三値版 |
+| | Qwen3.6-27B Q4 | Bonsai 2 27B 三値版 |
 |---|---|---|
-| 必要メモリ | ~17GB(実行時ピーク~20GB) | ~7GB(実行時ピーク~10GB) |
-| ランタイム | Ollama(本家) | **PrismML製llama.cppフォーク必須** |
-| 品質(公称) | フル精度の~99% | フル精度の~95% |
-| 向く用途 | テスト生成・仕様追従コード | ログ要約・抽出・定型コード |
+| 必要メモリ | ~17GB(実行時ピーク~20GB) | ~6GB(実行時ピーク~10GB) |
+| ランタイム | Ollama(本家) | **PrismML製llama.cppフォーク必須**(setup.shがコミット固定でビルド) |
+| ベース | — | Qwen3.8-27B |
+| 品質(公称) | フル精度の~99% | フル精度の~98%(実測は下記) |
+| 向く用途 | テスト生成・仕様追従コード | 思考モード(`--think`)での汎用委譲 |
 
 **RAM 32GB以上なら Qwen を推奨**。Bonsai は 8〜16GB マシンや常駐メモリを節約したい場合の選択肢です。
 
@@ -83,11 +84,11 @@ note: 選択基準はRAM。Bonsaiは8〜16GBマシン向けの現役の選択肢
 <!-- meta
 kind: record
 measured: 2026-07-15
-revalidated: false
 subjects: qwen3.6:27b, bonsai-27b-ternary
 verdict: 既定を qwen3.6:27b に採用
 status: current
-note: Bonsai列は2026-07-15の実測のまま。以降のベンチ更新では環境未セットアップのため再検証していない
+revalidated: 2026-09-18(初代Bonsaiを6タスクで再測定。「Bonsai 2 への切り替え」節を参照)
+note: Bonsai列はここでは2026-07-15の3タスク実測のまま
 -->
 
 `bench/run_bench.py` による自動採点(タスク: pytest生成→実行 / 仕様追従コード / ログ→JSON抽出):
@@ -100,7 +101,7 @@ note: Bonsai列は2026-07-15の実測のまま。以降のベンチ更新では�
 | 生成速度 | 9–10 tok/s | 11–15 tok/s |
 
 Bonsaiの失敗はケアレスミス型(算数ミス・import忘れ)で、まさにゲートで機械的に弾けるタイプでした。
-(Bonsai列は2026-07-15時点の実測のまま。以降のベンチ更新ではBonsai環境が未セットアップのため再検証していません。)
+(Bonsai列は2026-07-15時点の3タスク実測。6タスクでの再測定は「Bonsai 2 への切り替え」節にあります。)
 
 ### 追記: MoE版 `qwen3.6:35b-a3b` との比較(同環境, 2026-07-25再検証)
 
@@ -133,6 +134,54 @@ note: 測定値は有効。推奨のみ第2段タスクの結果で覆り、既�
 インストールは `QWEN_MODEL=qwen3.6:35b-a3b ./setup.sh --model qwen` でも、`ollama pull` 直でも。
 
 再現手順: `BENCH_OLLAMA_MODELS=qwen3.6:27b,qwen3.6:35b-a3b python3 bench/run_bench.py`
+
+### Bonsai 2 への切り替えと、壊れていた setup.sh(2026-09-18)
+
+<!-- meta
+kind: record, directive
+measured: 2026-09-18
+subjects: bonsai-2-27b-ternary(PTQ1_0), bonsai-27b-ternary(PQ2_0)
+verdict: setup.sh --model bonsai を Bonsai 2 に切り替え。フォークをコミット固定
+status: current
+installed: false(本機では評価後に削除。48GB機ではqwen/Ornithが上回るため)
+note: 旧 setup.sh は新規インストールで読み込みに失敗する状態だった
+-->
+
+PrismMLが **Ternary Bonsai 2 27B**(Qwen3.8-27Bベース、5.95GB)を公開したため評価しました。
+Bonsaiは本家Ollamaに載らないので、**`watch/` の監視では検知できません**(今回も手動で発見)。
+
+**まず不具合が見つかりました。** 旧 `setup.sh --model bonsai` は、フォークの最新版を
+クローンし、初代Bonsaiの `Q2_0.gguf` を落としていました。ところがフォーク側が9月に
+Q2_0 の解釈を変え(グループ128の旧形式→公式のグループ64形式)、**この組み合わせは
+読み込みに失敗**します。つまり**新規ユーザーがこのオプションを選ぶと動かない状態**でした。
+7月時点の手元環境は動いていたため気づけていませんでした。
+
+修正内容:
+- フォークを**検証済みコミットに固定**(`BONSAI_COMMIT`)。活発に開発中のフォークの
+  最新版を追うと、形式の解釈が変わったときに黙って壊れるため。モデルと一緒に上げる
+- 既存インストールも固定コミットへ移行し、ビルドが古ければ再ビルド(`.built-commit` で判定)
+- `bin/serve-bonsai` のファイル名ハードコードをやめ、setup.sh が記録した名前を読む
+
+隔離環境での新規インストール→起動→応答、再実行時に再ビルドしないことまで確認済みです。
+
+**初代と同じ6タスクで比較**(初代は新形式の `PQ2_0` 版で再測定):
+
+| | 初代 Bonsai(PQ2_0, 7.17GB) | **Bonsai 2(PTQ1_0, 5.95GB)** | 参考: 元の Qwen3.8-27B Q4 |
+|---|---|---|---|
+| 直答 | 3/6 · 305秒 | 3/6 · 400秒 | 5/6 · 387秒 |
+| 思考(temp 1.0) | 3/6 · 2,455秒 | **5/6 · 2,099秒** | 6/6 · 1,521秒 |
+
+Bonsai 2 は**小さく、思考モードで明確に上**(5/6 vs 3/6)なので切り替えました。
+
+注意点が2つあります:
+- **失点の多くはトークン上限切れ**です。4,000 / 12,000トークンぴったりで打ち切られ、
+  コードが出ていません(間違いではなく書き終わらなかった)。生成が冗長で、
+  1トークンあたりは元モデルの約1.8倍速いのに、合計時間はむしろ長くなりました
+- **直答では矛盾仕様を黙って実装**しました。元のQwen3.8と初代Bonsaiは直答でも
+  申告できたので、三値量子化で「問題を申告する」挙動が削れたとみられます。
+  **Bonsai 2 は `--think` での利用を推奨**します
+
+公称の「フル精度比98.2%維持」は、このベンチでは確認できませんでした(直答 3/6 vs 5/6)。
 
 ### 「30B級MoE」という構成は再現しない(2026-09-11)
 
@@ -475,7 +524,7 @@ note: 運用上の必須事項。特定の測定日に紐づかない
 -->
 
 - **thinkingの無効化**: Qwen3.6もBonsaiもthinkingモデルです。無効化しないと思考だけでトークン上限を使い切り、本体の回答が届きません。`bin/llm` は両バックエンドで無効化済み(Ollama: `think: false` / llama-server: `chat_template_kwargs.enable_thinking: false`)。
-- **Bonsaiは本家llama.cpp/Ollamaでは動きません**。独自量子化(Q2_0_g128)のため、PrismML公式のllama.cppフォーク(github.com/PrismML-Eng/llama.cpp)のビルドが必要です。モデル配布元が案内する正規ランタイムですが、本家よりコミュニティ監査が薄い第三者コードをビルド・実行することは理解した上で選んでください(`setup.sh` も確認を求めます)。
+- **Bonsaiは本家llama.cpp/Ollamaでは動きません**。独自量子化(PTQ1_0 / PQ2_0)のため、PrismML公式のllama.cppフォーク(github.com/PrismML-Eng/llama.cpp)のビルドが必要です。モデル配布元が案内する正規ランタイムですが、本家よりコミュニティ監査が薄い第三者コードをビルド・実行することは理解した上で選んでください(`setup.sh` も確認を求めます)。
 - **Ollamaのコンテキスト長**: デフォルトが短いため、`bin/llm` はリクエスト毎に `num_ctx` を指定しています。エージェントのモデルを丸ごと差し替える場合(docs参照)は `OLLAMA_CONTEXT_LENGTH=65536` 以上を推奨。
 
 ## License

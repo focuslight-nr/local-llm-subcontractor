@@ -11,8 +11,12 @@ set -euo pipefail
 
 QWEN_MODEL="${QWEN_MODEL:-qwen3.6:27b}"   # override e.g. QWEN_MODEL=qwen3.6:35b-a3b (needs ~32GB+ RAM)
 BONSAI_REPO="https://github.com/PrismML-Eng/llama.cpp"
-BONSAI_GGUF_URL="https://huggingface.co/prism-ml/Ternary-Bonsai-27B-gguf/resolve/main/Ternary-Bonsai-27B-Q2_0.gguf"
-BONSAI_GGUF="Ternary-Bonsai-27B-Q2_0.gguf"
+# The fork is under active development and has changed how it reads its own
+# formats (Sept 2026: legacy group-128 Q2_0 files stopped loading). Pin to a
+# commit verified against BONSAI_GGUF; bump both together.
+BONSAI_COMMIT="1a07bfa5f4144274c8f1c9963821dd9d9a51854b"
+BONSAI_GGUF="Ternary-Bonsai-2-27B-PTQ1_0.gguf"
+BONSAI_GGUF_URL="https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf/resolve/main/$BONSAI_GGUF"
 
 MODEL=""
 LLM_HOME="${LLM_HOME:-$HOME/local-llm}"
@@ -120,21 +124,34 @@ setup_bonsai() {
   for c in git cmake; do need_cmd "$c" || install_pkg "$c"; done
   need_cmd cc || { [[ "$OS" == "Linux" ]] && install_pkg build-essential; }
 
-  if [[ ! -d "$LLM_HOME/llama.cpp" ]]; then
-    info "cloning PrismML llama.cpp fork"
-    git clone --depth 1 "$BONSAI_REPO" "$LLM_HOME/llama.cpp"
+  local src="$LLM_HOME/llama.cpp" stamp="$LLM_HOME/llama.cpp/build/.built-commit"
+  if [[ ! -d "$src/.git" ]]; then
+    info "fetching PrismML llama.cpp fork @ ${BONSAI_COMMIT:0:7}"
+    git init -q "$src"
+    git -C "$src" remote add origin "$BONSAI_REPO"
   fi
-  if [[ ! -x "$LLM_HOME/llama.cpp/build/bin/llama-server" ]]; then
+  # Also migrates older installs that cloned the fork's moving HEAD.
+  if [[ "$(git -C "$src" rev-parse -q --verify HEAD 2>/dev/null)" != "$BONSAI_COMMIT" ]]; then
+    git -C "$src" fetch -q --depth 1 origin "$BONSAI_COMMIT"
+    git -C "$src" checkout -q --detach FETCH_HEAD
+  fi
+  if [[ ! -x "$src/build/bin/llama-server" || "$(cat "$stamp" 2>/dev/null)" != "$BONSAI_COMMIT" ]]; then
     info "building llama-server (a few minutes)"
-    cmake -S "$LLM_HOME/llama.cpp" -B "$LLM_HOME/llama.cpp/build" -DCMAKE_BUILD_TYPE=Release
-    cmake --build "$LLM_HOME/llama.cpp/build" -j "$(getconf _NPROCESSORS_ONLN)" --target llama-server llama-cli
+    cmake -S "$src" -B "$src/build" -DCMAKE_BUILD_TYPE=Release
+    cmake --build "$src/build" -j "$(getconf _NPROCESSORS_ONLN)" --target llama-server
+    echo "$BONSAI_COMMIT" > "$stamp"
   fi
 
   if [[ ! -f "$LLM_HOME/models/$BONSAI_GGUF" ]]; then
-    info "downloading $BONSAI_GGUF (~6.7GB, resumable)"
+    info "downloading $BONSAI_GGUF (~6GB, resumable)"
     curl -fL -C - -o "$LLM_HOME/models/$BONSAI_GGUF" "$BONSAI_GGUF_URL"
   fi
   head -c 4 "$LLM_HOME/models/$BONSAI_GGUF" | grep -q GGUF || die "downloaded file is not a GGUF"
+  # Tell bin/serve-bonsai which file to load, so the two never drift apart.
+  echo "$BONSAI_GGUF" > "$LLM_HOME/bonsai-model"
+  if [[ -f "$LLM_HOME/models/Ternary-Bonsai-27B-Q2_0.gguf" ]]; then
+    warn "legacy Ternary-Bonsai-27B-Q2_0.gguf no longer loads on the pinned fork; safe to delete"
+  fi
   info "bonsai ready. start it with: LLM_HOME=$LLM_HOME $(dirname "$0")/bin/serve-bonsai"
 }
 
