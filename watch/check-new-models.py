@@ -9,6 +9,11 @@ Runs unattended (launchd). Each pass:
 Deliberately conservative: it skips embedding/audio/vision-only models, caps how
 much it downloads per run, and refuses to start when the disk is low.
 
+It also watches PrismML's Hugging Face org for new Bonsai GGUFs. Those never
+reach the Ollama library (they need PrismML's llama.cpp fork), so they are
+reported only: evaluating one means building third-party code, possibly at a
+newer fork commit than setup.sh pins, and that should not happen unattended.
+
 State and reports live in ~/.local/state/llm-model-watch/.
 """
 import json
@@ -24,6 +29,7 @@ from pathlib import Path
 
 STATE = Path.home() / ".local/state/llm-model-watch"
 SNAPSHOT = STATE / "library.json"
+PRISM_SNAPSHOT = STATE / "prismml.json"
 LOG = STATE / "watch.log"
 REPORTS = STATE / "reports"
 BENCH = Path.home() / "GitHub/local-llm/bench/run_bench.py"
@@ -167,8 +173,7 @@ def write_report(results):
     return path
 
 
-def main():
-    STATE.mkdir(parents=True, exist_ok=True)
+def check_ollama():
     try:
         current = library_index()
     except Exception as e:
@@ -217,6 +222,68 @@ def main():
         log(f"report: {path}")
         notify("New local models benchmarked", summary)
     return 0
+
+
+def prismml_repos():
+    """All model repos in the prism-ml HF org, newest first (so a new one is
+    always inside the page even if older ones fall off the end)."""
+    data = json.loads(fetch("https://huggingface.co/api/models"
+                            "?author=prism-ml&sort=createdAt&direction=-1&limit=100"))
+    repos = [m["modelId"] for m in data]
+    if not repos:                          # API shape changed or we got blocked
+        raise RuntimeError("prism-ml listing came back empty")
+    return repos
+
+
+def check_prismml():
+    current = prismml_repos()
+    if not PRISM_SNAPSHOT.exists():
+        PRISM_SNAPSHOT.write_text(json.dumps(current))
+        log(f"prism-ml: seeded snapshot with {len(current)} repos")
+        return 0
+
+    previous = set(json.loads(PRISM_SNAPSHOT.read_text()))
+    new = [r for r in current if r not in previous]
+    PRISM_SNAPSHOT.write_text(json.dumps(current))
+    if not new:
+        log("prism-ml: no new repos")
+        return 0
+
+    log(f"prism-ml: new {', '.join(new)}")
+    # Only llama.cpp-loadable text models matter to setup.sh --model bonsai.
+    gguf = [r for r in new if "gguf" in r.lower() and "image" not in r.lower()]
+    if not gguf:
+        return 0
+
+    REPORTS.mkdir(parents=True, exist_ok=True)
+    path = REPORTS / f"{datetime.now():%Y-%m-%d}.md"
+    fresh = not path.exists()
+    with path.open("a") as f:
+        if fresh:
+            f.write(f"# Model watch {datetime.now():%Y-%m-%d}\n\n")
+        f.write("## New PrismML Bonsai GGUFs (not auto-tested)\n\n")
+        for r in gguf:
+            f.write(f"- [{r}](https://huggingface.co/{r})\n")
+        f.write("\nThese need PrismML's llama.cpp fork, so they are reported only. To evaluate:\n"
+                "build the fork at a commit that loads the new file, bench with\n"
+                "`BENCH_BONSAI=1`, and bump `BONSAI_COMMIT` / `BONSAI_GGUF` in setup.sh\n"
+                "together if adopting it.\n\n")
+    log(f"prism-ml: report {path}")
+    notify("New Bonsai release", f"{', '.join(gguf)} - needs a fork build to test")
+    return 0
+
+
+def main():
+    STATE.mkdir(parents=True, exist_ok=True)
+    rc = 0
+    # Independent sources: one failing must not stop the other.
+    for check in (check_ollama, check_prismml):
+        try:
+            rc |= check() or 0
+        except Exception as e:
+            log(f"{check.__name__} failed: {type(e).__name__}: {e}")
+            rc = 1
+    return rc
 
 
 if __name__ == "__main__":

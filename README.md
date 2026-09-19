@@ -148,7 +148,9 @@ note: 旧 setup.sh は新規インストールで読み込みに失敗する状�
 -->
 
 PrismMLが **Ternary Bonsai 2 27B**(Qwen3.8-27Bベース、5.95GB)を公開したため評価しました。
-Bonsaiは本家Ollamaに載らないので、**`watch/` の監視では検知できません**(今回も手動で発見)。
+Bonsaiは本家Ollamaに載らないので、当時の `watch/` 監視では検知できず、手動で発見しました。
+(この後、監視に PrismML の HF 組織を追加しました。新しい Bonsai GGUF は**検知・通知のみ**で、
+フォークのビルドを伴う評価は手動で行います。詳細は `watch/README.md`。)
 
 **まず不具合が見つかりました。** 旧 `setup.sh --model bonsai` は、フォークの最新版を
 クローンし、初代Bonsaiの `Q2_0.gguf` を落としていました。ところがフォーク側が9月に

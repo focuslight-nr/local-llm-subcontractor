@@ -26,6 +26,23 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.esp.llm-model-watch.
 4. `ollama pull` → `run_bench.py` を**直答モード**と**思考モード**の2条件で実行
 5. レポートとmacOS通知を出力
 
+## PrismML(Bonsai)の監視 — 検知と通知のみ
+
+Bonsai は本家 llama.cpp/Ollama で動かない(独自量子化)ため、**Ollama ライブラリには
+載りません**。そこで PrismML の Hugging Face 組織(`prism-ml`)も毎日差分を取り、
+新しい **GGUF** リポジトリが出たらレポートと通知を出します(MLX / AWQ / 画像モデルは除外)。
+
+こちらは**自動でダウンロードもベンチもしません**。評価には PrismML の llama.cpp フォークの
+ビルドが必要で、新しい Bonsai が setup.sh の固定コミットより新しいフォークを要求することも
+あります(2026-09 に実際に起きました)。第三者コードの無人ビルドは避け、判断を挟む設計です。
+
+通知が来たら:
+1. そのファイルを読み込めるコミットでフォークをビルドする
+2. `BENCH_BONSAI=1` でベンチを回す(直答・思考の両条件)
+3. 採用するなら setup.sh の `BONSAI_COMMIT` と `BONSAI_GGUF` を**セットで**更新する
+
+2つのソースは独立しており、片方の取得に失敗してももう片方は動きます。
+
 ## 安全装置
 
 | 制限 | 既定値 | 環境変数 |
@@ -42,7 +59,8 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.esp.llm-model-watch.
 
 ```
 ~/.local/state/llm-model-watch/
-├── library.json          # 前回のライブラリ一覧
+├── library.json          # 前回のOllamaライブラリ一覧
+├── prismml.json          # 前回のPrismML(prism-ml)リポジトリ一覧
 ├── watch.log             # 実行ログ
 └── reports/YYYY-MM-DD.md # スコア表と生ログ
 ```
