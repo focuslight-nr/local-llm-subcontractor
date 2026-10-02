@@ -30,6 +30,7 @@ from pathlib import Path
 STATE = Path.home() / ".local/state/llm-model-watch"
 SNAPSHOT = STATE / "library.json"
 PRISM_SNAPSHOT = STATE / "prismml.json"
+PENDING = STATE / "pending.json"       # models seen but not yet evaluated
 LOG = STATE / "watch.log"
 REPORTS = STATE / "reports"
 BENCH = Path.home() / "GitHub/local-llm/bench/run_bench.py"
@@ -38,6 +39,7 @@ MAX_PULL_GB = float(os.environ.get("WATCH_MAX_PULL_GB", "30"))   # skip bigger t
 MIN_PULL_GB = float(os.environ.get("WATCH_MIN_PULL_GB", "4"))    # skip toys
 MIN_FREE_GB = float(os.environ.get("WATCH_MIN_FREE_GB", "120"))  # refuse when low
 MAX_PER_RUN = int(os.environ.get("WATCH_MAX_PER_RUN", "2"))      # avoid a flood
+RETRY_DAYS = int(os.environ.get("WATCH_RETRY_DAYS", "21"))       # give up after this
 
 # Model families that are not chat/code subcontractors.
 SKIP = re.compile(r"embed|bge-|all-minilm|nomic|snowflake|paraphrase|rerank|"
@@ -120,6 +122,16 @@ def bench(tag, think):
     return r.stdout, scores
 
 
+NEEDS_UPGRADE = "needs a newer Ollama (brew upgrade ollama && brew services restart ollama)"
+
+
+def load_pending():
+    try:
+        return json.loads(PENDING.read_text())
+    except Exception:
+        return {}
+
+
 def evaluate(name):
     tag, gb = pick_tag(name)
     if not tag:
@@ -132,9 +144,15 @@ def evaluate(name):
     log(f"  {name}: pulling {tag} ({gb}GB)")
     r = run(["ollama", "pull", tag], timeout=7200)
     if r.returncode != 0:
-        tail = (r.stderr or r.stdout).strip().splitlines()[-1:] or ["unknown error"]
-        log(f"  {name}: pull failed - {tail[0]}")
-        return {"tag": tag, "gb": gb, "error": tail[0]}
+        out = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", r.stderr or r.stdout)
+        if "newer version of Ollama" in out:
+            # The usual reason a brand-new model fails: it shipped alongside a
+            # newer runtime. Worth retrying daily until the user upgrades.
+            err = NEEDS_UPGRADE
+        else:
+            err = ([l.strip() for l in out.splitlines() if l.strip()] or ["unknown error"])[-1]
+        log(f"  {name}: pull failed - {err}")
+        return {"tag": tag, "gb": gb, "error": err}
 
     log(f"  {tag}: benching (direct)")
     direct_out, direct = bench(tag, think=False)
@@ -159,7 +177,8 @@ def write_report(results):
         for res in results:
             f.write(f"## {res['tag']} ({res['gb']}GB)\n\n")
             if "error" in res:
-                f.write(f"Pull failed: {res['error']}\n\n")
+                f.write(f"Not evaluated yet: {res['error']}\n\n"
+                        f"It stays queued and is retried daily for {RETRY_DAYS} days.\n\n")
                 continue
             for label, scores in (("direct", res["direct"]), ("thinking", res["thinking"])):
                 total = sum(int(v) for v in scores.values())
@@ -187,36 +206,67 @@ def check_ollama():
 
     previous = set(json.loads(SNAPSHOT.read_text()))
     new = [n for n in current if n not in previous]
-    # Record the snapshot before any slow work, so a crash cannot re-trigger pulls.
+    interesting = [n for n in new if not SKIP.search(n)]
+
+    # Everything new goes through a queue, and both files are written before any
+    # slow work. The snapshot alone is not enough: it forgets a model the moment
+    # it is seen, so one that fails to pull (typically because it needs a newer
+    # Ollama) or falls beyond MAX_PER_RUN would never be tried again.
+    today = datetime.now().date().isoformat()
+    pending = load_pending()
+    for n in interesting:
+        pending.setdefault(n, {"first_seen": today, "attempts": 0})
+    for n in [n for n, e in pending.items()
+              if (datetime.now().date() - datetime.fromisoformat(e["first_seen"]).date()).days > RETRY_DAYS]:
+        log(f"  {n}: giving up after {RETRY_DAYS} days ({pending[n].get('error', 'never evaluated')})")
+        del pending[n]
+    PENDING.write_text(json.dumps(pending, indent=1))
     SNAPSHOT.write_text(json.dumps(current))
 
-    if not new:
-        log("no new models")
+    if new:
+        log(f"new: {', '.join(new)}" + (f" (skipping non-chat: "
+            f"{', '.join(n for n in new if SKIP.search(n))})" if len(interesting) < len(new) else ""))
+    if not pending:
+        if not new:
+            log("no new models")
         return 0
-
-    interesting = [n for n in new if not SKIP.search(n)]
-    log(f"new: {', '.join(new)}" + (f" (skipping non-chat: "
-        f"{', '.join(n for n in new if SKIP.search(n))})" if len(interesting) < len(new) else ""))
+    retries = [n for n in pending if n not in interesting]
+    if retries:
+        log(f"retrying: {', '.join(retries)}")
 
     if free_gb() < MIN_FREE_GB:
         log(f"only {free_gb():.0f}GB free, not benchmarking")
-        notify("New local models", f"{', '.join(interesting)} — disk too low to test")
+        if interesting:
+            notify("New local models", f"{', '.join(interesting)} — disk too low to test")
         return 0
 
     results = []
-    for name in interesting[:MAX_PER_RUN]:
+    # Oldest first, so a backlog drains instead of starving behind newcomers.
+    for name in sorted(pending, key=lambda n: pending[n]["first_seen"])[:MAX_PER_RUN]:
+        entry = pending[name]
         try:
             res = evaluate(name)
         except Exception as e:
             log(f"  {name}: {type(e).__name__}: {e}")
-            res = None
-        if res:
+            res = {"tag": name, "gb": 0, "error": f"{type(e).__name__}: {e}"}
+        if res is None:                    # no runnable tag: nothing to retry
+            del pending[name]
+        elif "error" in res:
+            first_failure = entry["attempts"] == 0
+            entry["attempts"] += 1
+            entry["error"] = res["error"]
+            if first_failure:              # report once, then retry quietly
+                results.append(res)
+        else:
+            del pending[name]
             results.append(res)
+        PENDING.write_text(json.dumps(pending, indent=1))
 
     if results:
         path = write_report(results)
         summary = "; ".join(
-            f"{r['tag']}: " + (r.get("error") and "pull failed" or
+            f"{r['tag']}: " + (r.get("error") and ("needs newer Ollama" if r["error"] == NEEDS_UPGRADE
+                                                    else "pull failed, will retry") or
                                f"{sum(int(v) for v in r['thinking'].values())}/6 thinking")
             for r in results)
         log(f"report: {path}")
