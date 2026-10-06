@@ -21,6 +21,10 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.esp.llm-model-watch.
 
 1. `https://ollama.com/library` の一覧を前回分と差分比較
 2. 新規エントリのうち、埋め込み/音声/画像系(`bge-`, `whisper`, `embed` など)を除外
+   さらに、説明文が**判定・分類専用モデル**(「decision model」「classification」など)を
+   示すものも除外します。選択肢から答えを選ぶだけでコードを書けないため、生成タスクの
+   ベンチは0点にしかならず、ダウンロードが無駄になるからです(`clef`、`nimble` など、
+   名前からは見分けられません)。説明文が取得できないときは安全側に倒して評価します
 3. 残りから**人が実際に選ぶであろうタグ**を採用
    (`:27b` のような素のタグを優先。`:27b-mtp-q8_0` のような派生は後回し)
 4. `ollama pull` → `run_bench.py` を**直答モード**と**思考モード**の2条件で実行

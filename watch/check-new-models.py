@@ -16,6 +16,7 @@ newer fork commit than setup.sh pins, and that should not happen unattended.
 
 State and reports live in ~/.local/state/llm-model-watch/.
 """
+import html as htmllib
 import json
 import os
 import re
@@ -125,6 +126,32 @@ def bench(tag, think):
 NEEDS_UPGRADE = "needs a newer Ollama (brew upgrade ollama && brew services restart ollama)"
 
 
+# Models that only pick among answers you supply (routing, policy checks) rather
+# than write anything. The generation bench would score them 0/6 after a large
+# download, so skip them. Matched on the library description because the names
+# give nothing away (clef, nimble, tev1).
+NON_GENERATIVE = re.compile(
+    r"decision model|into decisions|typed questions|"
+    r"\bfor (?:fast |typed )*classification|classification model|\bclassifier\b",
+    re.I)
+
+
+def description(name):
+    page = fetch(f"https://ollama.com/library/{name}")
+    m = re.search(r'<meta name="description" content="([^"]*)"', page)
+    return htmllib.unescape(m.group(1)) if m else ""
+
+
+def non_generative(name):
+    """True if the description marks this as a decision/classification model.
+    Fails open: when the description can't be read, evaluate as usual."""
+    try:
+        return bool(NON_GENERATIVE.search(description(name)))
+    except Exception as e:
+        log(f"  {name}: could not read description ({type(e).__name__}), evaluating anyway")
+        return False
+
+
 def load_pending():
     try:
         return json.loads(PENDING.read_text())
@@ -133,6 +160,10 @@ def load_pending():
 
 
 def evaluate(name):
+    # Also catches entries queued before this filter existed.
+    if non_generative(name):
+        log(f"  {name}: decision/classification model, cannot generate code - dropping")
+        return None
     tag, gb = pick_tag(name)
     if not tag:
         log(f"  {name}: no tag within {MIN_PULL_GB}-{MAX_PULL_GB}GB, skipping")
@@ -207,6 +238,8 @@ def check_ollama():
     previous = set(json.loads(SNAPSHOT.read_text()))
     new = [n for n in current if n not in previous]
     interesting = [n for n in new if not SKIP.search(n)]
+    decision = [n for n in interesting if non_generative(n)]
+    interesting = [n for n in interesting if n not in decision]
 
     # Everything new goes through a queue, and both files are written before any
     # slow work. The snapshot alone is not enough: it forgets a model the moment
@@ -224,8 +257,10 @@ def check_ollama():
     SNAPSHOT.write_text(json.dumps(current))
 
     if new:
-        log(f"new: {', '.join(new)}" + (f" (skipping non-chat: "
-            f"{', '.join(n for n in new if SKIP.search(n))})" if len(interesting) < len(new) else ""))
+        named = [n for n in new if SKIP.search(n)]
+        log(f"new: {', '.join(new)}"
+            + (f" (skipping non-chat: {', '.join(named)})" if named else "")
+            + (f" (skipping decision models: {', '.join(decision)})" if decision else ""))
     if not pending:
         if not new:
             log("no new models")
