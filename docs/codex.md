@@ -12,10 +12,19 @@ Delegate mechanical generation tasks to the local LLM to save tokens:
 test generation, boilerplate, and summarizing/structuring large logs or docs
 before reading them.
 
-Do NOT delegate: cross-repo changes, design decisions, debugging.
+Do NOT delegate: cross-repo changes, design decisions, debugging. Also keep tests
+that lean on many internal APIs (E2E, inherited base test classes, fixture graphs):
+their definitions will not fit in a spec.
 
 Procedure:
 1. Write a complete spec (inputs/outputs, edge cases, exact output format).
+   The local model cannot see the repository, so it invents any name the spec
+   does not contain. Paste the real code the test touches: signatures, dataclass
+   definitions, exceptions with their module paths, fixtures to reuse, and the
+   exact import lines as code, not comments (keep it under ~300 lines). Tell it
+   to use only names in the spec and to write `# MISSING: <what>` instead of
+   guessing; on a MISSING marker, add the definition and resend (this does not
+   count as a retry).
 2. Pipe it to `<REPO_PATH>/bin/llm -m qwen`.
 3. Gate the output locally: pytest/lint for code, JSON validation for extraction.
 4. On failure, retry via the local LLM with the error attached (max 2 retries).
