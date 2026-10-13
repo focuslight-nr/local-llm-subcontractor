@@ -20,7 +20,11 @@ Procedure:
 3. Gate the output locally: pytest/lint for code, JSON validation for extraction.
 4. On failure, retry via the local LLM with the error attached (max 2 retries).
 5. Review only gated output yourself.
-6. If the server is unreachable (exit code 2) or retries are exhausted, do it yourself.
+6. Any non-zero exit means there is no usable answer (stdout is empty): 2 = could not
+   connect (server down, or a sandbox blocking localhost), 3 = the server returned an
+   error or timed out (often transient during an upgrade/restart - retry), 4 = the model
+   returned an empty answer. Read stderr for the cause; if it cannot be fixed, or
+   retries are exhausted, do it yourself.
 ```
 
 ## パターンB: モデル丸ごと差し替え

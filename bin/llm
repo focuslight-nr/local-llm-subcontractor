@@ -9,6 +9,12 @@ Usage:
 
 -m accepts an alias (below) or any Ollama model name directly.
 
+Exit codes (anything non-zero means no usable answer, and stdout is empty):
+  0  answer written to stdout
+  2  could not connect: server not running, or a sandbox is blocking localhost
+  3  connected, but the request failed (HTTP error from the server, or timeout)
+  4  the model returned an empty answer
+
 Thinking is off by default: it costs several times the wall-clock and, at small
 output budgets, can consume the whole allowance before answering. Use --think for
 fiddly specs that direct answering gets wrong (it raises the token budget and
@@ -27,6 +33,7 @@ import argparse
 import json
 import os
 import re
+import socket
 import sys
 import urllib.error
 import urllib.request
@@ -73,9 +80,26 @@ def request(cfg, system, prompt, temperature, max_tokens, timeout, think=False):
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         resp = json.load(r)
+    # Return why generation stopped too: "length" means the token budget ran
+    # out, which is how an empty answer happens when reasoning eats it all.
     if cfg["api"] == "ollama":
-        return resp["message"]["content"]
-    return resp["choices"][0]["message"]["content"]
+        return resp["message"]["content"] or "", resp.get("done_reason")
+    choice = resp["choices"][0]
+    return choice["message"]["content"] or "", choice.get("finish_reason")
+
+
+def fail(code, msg):
+    sys.stderr.write(msg.rstrip("\n") + "\n")
+    sys.exit(code)
+
+
+def http_error_detail(e):
+    """Ollama and llama-server put the useful part in a JSON body."""
+    try:
+        body = e.read().decode("utf-8", "replace")
+        return json.loads(body).get("error") or body.strip()
+    except Exception:
+        return e.reason
 
 
 def main():
@@ -115,17 +139,46 @@ def main():
         cfg = {"api": "ollama", "url": BACKENDS["qwen"]["url"], "model": args.model,
                "start_hint": "ollama serve   (then: ollama pull {})".format(args.model)}
     try:
-        text = request(cfg, args.system, prompt, args.temperature,
-                       args.max_tokens, args.timeout, args.think)
+        text, stop_reason = request(cfg, args.system, prompt, args.temperature,
+                                    args.max_tokens, args.timeout, args.think)
+    # HTTPError subclasses URLError, so it must come first: the server was
+    # reached and answered with an error, which is not "unreachable".
+    except urllib.error.HTTPError as e:
+        hint = ""
+        if e.code == 404:
+            hint = "\nis the model pulled? try: ollama pull {}".format(cfg["model"])
+        elif e.code >= 500:
+            hint = ("\nthe server failed mid-request (e.g. it was being upgraded or "
+                    "restarted); retrying usually works")
+        fail(3, "{} backend returned HTTP {}: {}{}".format(
+            args.model, e.code, http_error_detail(e), hint))
+    except (socket.timeout, TimeoutError):
+        fail(3, "{} backend did not finish within {}s (raise --timeout, or "
+                "shorten the spec)".format(args.model, args.timeout))
     except (urllib.error.URLError, ConnectionError) as e:
-        sys.stderr.write(
-            "cannot reach {} backend at {} ({})\nstart it with: {}\n".format(
-                args.model, cfg["url"], e, cfg["start_hint"]))
-        sys.exit(2)
+        reason = getattr(e, "reason", e)
+        if isinstance(reason, PermissionError) or getattr(reason, "errno", None) == 1:
+            hint = ("the connection was refused by the OS, not by the server: a "
+                    "sandbox is blocking localhost. Grant network access and retry.")
+        else:
+            hint = "start it with: " + cfg["start_hint"]
+        fail(2, "cannot reach {} backend at {} ({})\n{}".format(
+            args.model, cfg["url"], reason, hint))
 
     # Belt and braces: drop any inline reasoning that slipped through.
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
-    sys.stdout.write(text + ("\n" if not text.endswith("\n") else ""))
+    if not text:
+        # Never exit 0 with nothing to show: callers checking only for a
+        # non-empty file would accept a blank answer as a success.
+        why = ""
+        if stop_reason == "length":
+            why = (" - the {}-token budget ran out before any answer{}; raise "
+                   "--max-tokens".format(args.max_tokens,
+                                         " (with --think, reasoning uses it first)"
+                                         if args.think else ""))
+        fail(4, "{} returned an empty answer (stop reason: {}){}".format(
+            args.model, stop_reason or "unknown", why))
+    sys.stdout.write(text + "\n")
 
 
 if __name__ == "__main__":
