@@ -72,5 +72,6 @@ export ANTHROPIC_MODEL=qwen3.6:27b
 claude
 ```
 
-Bonsai(llama-server)はAnthropic APIを話さないため、丸ごと差し替えには
-LiteLLM 等の変換プロキシが必要です。下請け用途(パターンA)なら不要。
+Bonsai 2 もOllamaで動くので、同じ手順で `ANTHROPIC_MODEL=bonsai-2:27b` を指定できます。
+ただし直答では精度が落ちる(ベンチ3/6)推論モード前提のモデルで、思考のぶん応答も遅いため、
+丸ごと差し替えより下請け用途(パターンA、`--think` 付き)のほうが向いています。

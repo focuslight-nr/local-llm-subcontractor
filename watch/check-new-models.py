@@ -364,10 +364,9 @@ def check_prismml():
         f.write("## New PrismML Bonsai GGUFs (not auto-tested)\n\n")
         for r in gguf:
             f.write(f"- [{r}](https://huggingface.co/{r})\n")
-        f.write("\nThese need PrismML's llama.cpp fork, so they are reported only. To evaluate:\n"
-                "build the fork at a commit that loads the new file, bench with\n"
-                "`BENCH_BONSAI=1`, and bump `BONSAI_COMMIT` / `BONSAI_GGUF` in setup.sh\n"
-                "together if adopting it.\n\n")
+        f.write("\nBonsai usually reaches the Ollama library weeks after Hugging Face; once it\n"
+                "does, the Ollama check evaluates it automatically. To test sooner, build\n"
+                "PrismML's llama.cpp fork by hand. If adopting, update `BONSAI_MODEL` in setup.sh.\n\n")
     log(f"prism-ml: report {path}")
     notify("New Bonsai release", f"{', '.join(gguf)} - needs a fork build to test")
     return 0

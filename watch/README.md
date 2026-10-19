@@ -30,20 +30,20 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.esp.llm-model-watch.
 4. `ollama pull` → `run_bench.py` を**直答モード**と**思考モード**の2条件で実行
 5. レポートとmacOS通知を出力
 
-## PrismML(Bonsai)の監視 — 検知と通知のみ
+## PrismML(Bonsai)の監視 — 早期通知のみ
 
-Bonsai は本家 llama.cpp/Ollama で動かない(独自量子化)ため、**Ollama ライブラリには
-載りません**。そこで PrismML の Hugging Face 組織(`prism-ml`)も毎日差分を取り、
-新しい **GGUF** リポジトリが出たらレポートと通知を出します(MLX / AWQ / 画像モデルは除外)。
+PrismML の Hugging Face 組織(`prism-ml`)も毎日差分を取り、新しい **GGUF** リポジトリが
+出たらレポートと通知を出します(MLX / AWQ / 画像モデルは除外)。
 
-こちらは**自動でダウンロードもベンチもしません**。評価には PrismML の llama.cpp フォークの
-ビルドが必要で、新しい Bonsai が setup.sh の固定コミットより新しいフォークを要求することも
-あります(2026-09 に実際に起きました)。第三者コードの無人ビルドは避け、判断を挟む設計です。
+Bonsai は Hugging Face に先に出て、Ollama ライブラリに載るのは後です(Bonsai 2 は
+HF が 2026-09-16、Ollama が 2026-10 中旬で、約1か月の差)。Ollama に載れば上の監視が
+自動で評価するので、こちらは**ダウンロードもベンチもせず、早く知らせるだけ**です。
 
 通知が来たら:
-1. そのファイルを読み込めるコミットでフォークをビルドする
-2. `BENCH_BONSAI=1` でベンチを回す(直答・思考の両条件)
-3. 採用するなら setup.sh の `BONSAI_COMMIT` と `BONSAI_GGUF` を**セットで**更新する
+1. Ollama ライブラリに載るのを待つ(載れば監視が自動で評価します)
+2. 待てない場合や Ollama に載らない場合は、PrismML の llama.cpp フォークで手動評価する。
+   第三者コードのビルドになるので、無人では行いません
+3. 採用するなら setup.sh の `BONSAI_MODEL` を更新する
 
 2つのソースは独立しており、片方の取得に失敗してももう片方は動きます。
 

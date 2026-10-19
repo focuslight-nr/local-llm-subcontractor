@@ -56,6 +56,5 @@ model = "qwen3.6:27b"
 注意点は Claude Code と同じです:
 - `OLLAMA_CONTEXT_LENGTH=65536` 以上にしないとエージェントループが回りません
 - 27Bクラスにフルのエージェントハーネスはかなり厳しいので実験用途向け
-- Bonsai(llama-server)も OpenAI 互換なので `base_url = "http://localhost:8080/v1"`
-  で同様に差し替え可能ですが、thinking をリクエスト側で無効化できない
-  ハーネスでは思考にトークンを食われる点に注意
+- Bonsai 2 もOllamaで動くので、同じプロバイダで `model = "bonsai-2:27b"` を指定できます。
+  ただし推論モード前提のモデルなので、思考にトークンと時間を食われる点に注意

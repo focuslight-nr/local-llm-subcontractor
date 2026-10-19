@@ -5,18 +5,15 @@
 #   ./setup.sh [--model qwen|bonsai|both] [--dir PATH] [--yes]
 #
 #   --model   Which backend to install (default: suggest from RAM size)
-#   --dir     Install location for models/runtimes (default: ~/local-llm, or $LLM_HOME)
+#   --dir     Where to keep the Ollama log if this script starts the server
+#             (default: ~/local-llm, or $LLM_HOME). Models live in Ollama's own store.
 #   --yes     Non-interactive: accept all confirmations
 set -euo pipefail
 
 QWEN_MODEL="${QWEN_MODEL:-qwen3.6:27b}"   # override e.g. QWEN_MODEL=qwen3.6:35b-a3b (needs ~32GB+ RAM)
-BONSAI_REPO="https://github.com/PrismML-Eng/llama.cpp"
-# The fork is under active development and has changed how it reads its own
-# formats (Sept 2026: legacy group-128 Q2_0 files stopped loading). Pin to a
-# commit verified against BONSAI_GGUF; bump both together.
-BONSAI_COMMIT="1a07bfa5f4144274c8f1c9963821dd9d9a51854b"
-BONSAI_GGUF="Ternary-Bonsai-2-27B-PTQ1_0.gguf"
-BONSAI_GGUF_URL="https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf/resolve/main/$BONSAI_GGUF"
+# Bonsai 2 (PrismML's ternary build of Qwen3.8-27B) ships in the Ollama library
+# since Oct 2026, so it no longer needs PrismML's llama.cpp fork built from source.
+BONSAI_MODEL="${BONSAI_MODEL:-bonsai-2:27b}"
 
 MODEL=""
 LLM_HOME="${LLM_HOME:-$HOME/local-llm}"
@@ -27,7 +24,7 @@ while [[ $# -gt 0 ]]; do
     --model) MODEL="$2"; shift 2 ;;
     --dir)   LLM_HOME="$2"; shift 2 ;;
     --yes)   ASSUME_YES=1; shift ;;
-    -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -86,18 +83,18 @@ install_pkg() {
   fi
 }
 
-mkdir -p "$LLM_HOME/models"
+mkdir -p "$LLM_HOME"
 info "install dir: $LLM_HOME"
 
-# --- qwen (Ollama) -----------------------------------------------------------
-setup_qwen() {
+# --- Ollama (shared by both models) ---------------------------------------------
+ensure_ollama() {
   if ! need_cmd ollama; then
     info "installing Ollama"
     if [[ "$OS" == "Darwin" ]]; then
       install_pkg ollama
     else
       confirm "Run the official Ollama install script (curl https://ollama.com/install.sh | sh)?" \
-        || die "Ollama required for qwen; install it and re-run"
+        || die "Ollama is required; install it and re-run"
       curl -fsSL https://ollama.com/install.sh | sh
     fi
   fi
@@ -110,49 +107,40 @@ setup_qwen() {
     done
     curl -s --max-time 2 localhost:11434/api/version >/dev/null || die "ollama serve did not come up"
   fi
-  info "pulling $QWEN_MODEL (~17GB, skips if up to date)"
-  ollama pull "$QWEN_MODEL"
+  # Upgrading the package does not restart a running server, so a new model can
+  # still be refused by the old one. Catch that before a long pull fails.
+  if ollama --version 2>&1 | grep -q "client version is"; then
+    warn "the running Ollama server is older than the installed one: $(ollama --version 2>&1 | tr '\n' ' ')"
+    warn "restart it (macOS: brew services restart ollama) so new models can be pulled"
+  fi
 }
 
-# --- bonsai (PrismML llama.cpp fork) ------------------------------------------
+ollama_pull() {
+  local out
+  if ! out="$(ollama pull "$1" 2>&1 | tee /dev/stderr)"; then
+    if grep -q "newer version of Ollama" <<<"$out"; then
+      die "$1 needs a newer Ollama: upgrade it, then restart the server (macOS: brew upgrade ollama && brew services restart ollama)"
+    fi
+    die "ollama pull $1 failed"
+  fi
+}
+
+# --- qwen ---------------------------------------------------------------------
+setup_qwen() {
+  ensure_ollama
+  info "pulling $QWEN_MODEL (~17GB, skips if up to date)"
+  ollama_pull "$QWEN_MODEL"
+}
+
+# --- bonsai --------------------------------------------------------------------
 setup_bonsai() {
-  warn "Bonsai's ternary format needs PrismML's llama.cpp FORK ($BONSAI_REPO)."
-  warn "This is the model vendor's official runtime, but it is third-party code"
-  warn "with less community review than mainline llama.cpp."
-  confirm "Clone and build it?" || die "bonsai setup declined"
-
-  for c in git cmake; do need_cmd "$c" || install_pkg "$c"; done
-  need_cmd cc || { [[ "$OS" == "Linux" ]] && install_pkg build-essential; }
-
-  local src="$LLM_HOME/llama.cpp" stamp="$LLM_HOME/llama.cpp/build/.built-commit"
-  if [[ ! -d "$src/.git" ]]; then
-    info "fetching PrismML llama.cpp fork @ ${BONSAI_COMMIT:0:7}"
-    git init -q "$src"
-    git -C "$src" remote add origin "$BONSAI_REPO"
+  ensure_ollama
+  info "pulling $BONSAI_MODEL (~8GB, skips if up to date)"
+  ollama_pull "$BONSAI_MODEL"
+  # Earlier versions of this kit built PrismML's llama.cpp fork into LLM_HOME.
+  if [[ -d "$LLM_HOME/llama.cpp" || -n "$(ls "$LLM_HOME"/models/*Bonsai*.gguf 2>/dev/null)" ]]; then
+    info "the old fork build is no longer used; safe to delete: $LLM_HOME/llama.cpp $LLM_HOME/models/*Bonsai*.gguf"
   fi
-  # Also migrates older installs that cloned the fork's moving HEAD.
-  if [[ "$(git -C "$src" rev-parse -q --verify HEAD 2>/dev/null)" != "$BONSAI_COMMIT" ]]; then
-    git -C "$src" fetch -q --depth 1 origin "$BONSAI_COMMIT"
-    git -C "$src" checkout -q --detach FETCH_HEAD
-  fi
-  if [[ ! -x "$src/build/bin/llama-server" || "$(cat "$stamp" 2>/dev/null)" != "$BONSAI_COMMIT" ]]; then
-    info "building llama-server (a few minutes)"
-    cmake -S "$src" -B "$src/build" -DCMAKE_BUILD_TYPE=Release
-    cmake --build "$src/build" -j "$(getconf _NPROCESSORS_ONLN)" --target llama-server
-    echo "$BONSAI_COMMIT" > "$stamp"
-  fi
-
-  if [[ ! -f "$LLM_HOME/models/$BONSAI_GGUF" ]]; then
-    info "downloading $BONSAI_GGUF (~6GB, resumable)"
-    curl -fL -C - -o "$LLM_HOME/models/$BONSAI_GGUF" "$BONSAI_GGUF_URL"
-  fi
-  head -c 4 "$LLM_HOME/models/$BONSAI_GGUF" | grep -q GGUF || die "downloaded file is not a GGUF"
-  # Tell bin/serve-bonsai which file to load, so the two never drift apart.
-  echo "$BONSAI_GGUF" > "$LLM_HOME/bonsai-model"
-  if [[ -f "$LLM_HOME/models/Ternary-Bonsai-27B-Q2_0.gguf" ]]; then
-    warn "legacy Ternary-Bonsai-27B-Q2_0.gguf no longer loads on the pinned fork; safe to delete"
-  fi
-  info "bonsai ready. start it with: LLM_HOME=$LLM_HOME $(dirname "$0")/bin/serve-bonsai"
 }
 
 [[ "$MODEL" == "qwen"   || "$MODEL" == "both" ]] && setup_qwen
@@ -160,6 +148,5 @@ setup_bonsai() {
 
 info "done. smoke test:"
 [[ "$MODEL" != "bonsai" ]] && echo "  echo 'Reply with exactly: OK' | $(dirname "$0")/bin/llm -m qwen"
-[[ "$MODEL" != "qwen"   ]] && echo "  LLM_HOME=$LLM_HOME $(dirname "$0")/bin/serve-bonsai &   # then:"
-[[ "$MODEL" != "qwen"   ]] && echo "  echo 'Reply with exactly: OK' | $(dirname "$0")/bin/llm -m bonsai"
+[[ "$MODEL" != "qwen"   ]] && echo "  echo 'Reply with exactly: OK' | $(dirname "$0")/bin/llm -m bonsai --think"
 echo "Agent integration: docs/claude-code.md / docs/codex.md"

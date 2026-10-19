@@ -5,7 +5,7 @@ Usage:
   echo "prompt" | llm -m qwen
   llm -m qwen3.6:35b-a3b "Write a slugify function in Python. Output only code."
   llm -m qwen -s "You output only JSON." < input.txt
-  llm -m qwen3.8:27b --think < tricky_spec.md   # reason first, then answer
+  llm -m ornith-1.5:35b --think < tricky_spec.md   # reason first, then answer
 
 -m accepts an alias (below) or any Ollama model name directly.
 
@@ -20,14 +20,11 @@ output budgets, can consume the whole allowance before answering. Use --think fo
 fiddly specs that direct answering gets wrong (it raises the token budget and
 temperature to match).
 
-Backends (override with env vars):
-  qwen    Ollama native API      LLM_QWEN_URL   (default http://localhost:11434)
-                                 LLM_QWEN_MODEL (default qwen3.6:27b)
-  bonsai  llama-server OpenAI API LLM_BONSAI_URL (default http://localhost:8080)
+All models are served by Ollama (LLM_OLLAMA_URL, default http://localhost:11434;
+LLM_QWEN_URL is still honoured). Aliases (override the model with env vars):
+  qwen    LLM_QWEN_MODEL   (default qwen3.6:27b)
+  bonsai  LLM_BONSAI_MODEL (default bonsai-2:27b; use with --think)
   <other> treated as an Ollama model name (e.g. qwen3.6:35b-a3b)
-
-Thinking is disabled on both backends — these are thinking models and would
-otherwise burn the whole token budget on reasoning.
 """
 import argparse
 import json
@@ -38,19 +35,12 @@ import sys
 import urllib.error
 import urllib.request
 
-BACKENDS = {
-    "qwen": {
-        "api": "ollama",
-        "url": os.environ.get("LLM_QWEN_URL", "http://localhost:11434"),
-        "model": os.environ.get("LLM_QWEN_MODEL", "qwen3.6:27b"),
-        "start_hint": "ollama serve   (then: ollama pull qwen3.6:27b)",
-    },
-    "bonsai": {
-        "api": "openai",
-        "url": os.environ.get("LLM_BONSAI_URL", "http://localhost:8080"),
-        "model": "bonsai",
-        "start_hint": "bin/serve-bonsai (in this repo)",
-    },
+OLLAMA_URL = os.environ.get("LLM_OLLAMA_URL") or os.environ.get("LLM_QWEN_URL") \
+    or "http://localhost:11434"
+
+ALIASES = {
+    "qwen": os.environ.get("LLM_QWEN_MODEL", "qwen3.6:27b"),
+    "bonsai": os.environ.get("LLM_BONSAI_MODEL", "bonsai-2:27b"),
 }
 
 DEFAULT_SYSTEM = ("You are a precise coding assistant. Follow output format "
@@ -62,30 +52,19 @@ THINKING_SYSTEM = ("You are a precise coding assistant. Follow output format "
                    "instructions exactly.")
 
 
-def request(cfg, system, prompt, temperature, max_tokens, timeout, think=False):
+def request(model, system, prompt, temperature, max_tokens, timeout, think=False):
     messages = [{"role": "system", "content": system},
                 {"role": "user", "content": prompt}]
-    if cfg["api"] == "ollama":
-        url = cfg["url"] + "/api/chat"
-        payload = {"model": cfg["model"], "messages": messages, "stream": False,
-                   "think": think,
-                   "options": {"temperature": temperature, "num_predict": max_tokens,
-                               "num_ctx": int(os.environ.get("LLM_NUM_CTX", 16384))}}
-    else:
-        url = cfg["url"] + "/v1/chat/completions"
-        payload = {"model": cfg["model"], "messages": messages,
-                   "temperature": temperature, "max_tokens": max_tokens,
-                   "chat_template_kwargs": {"enable_thinking": think}}
-    req = urllib.request.Request(url, data=json.dumps(payload).encode(),
+    payload = {"model": model, "messages": messages, "stream": False, "think": think,
+               "options": {"temperature": temperature, "num_predict": max_tokens,
+                           "num_ctx": int(os.environ.get("LLM_NUM_CTX", 16384))}}
+    req = urllib.request.Request(OLLAMA_URL + "/api/chat", data=json.dumps(payload).encode(),
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         resp = json.load(r)
     # Return why generation stopped too: "length" means the token budget ran
     # out, which is how an empty answer happens when reasoning eats it all.
-    if cfg["api"] == "ollama":
-        return resp["message"]["content"] or "", resp.get("done_reason")
-    choice = resp["choices"][0]
-    return choice["message"]["content"] or "", choice.get("finish_reason")
+    return resp["message"]["content"] or "", resp.get("done_reason")
 
 
 def fail(code, msg):
@@ -94,7 +73,7 @@ def fail(code, msg):
 
 
 def http_error_detail(e):
-    """Ollama and llama-server put the useful part in a JSON body."""
+    """Ollama puts the useful part in a JSON body."""
     try:
         body = e.read().decode("utf-8", "replace")
         return json.loads(body).get("error") or body.strip()
@@ -107,7 +86,7 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-m", "--model", default=os.environ.get("LLM_DEFAULT", "qwen"),
                     help="backend alias ({}) or any Ollama model name".format(
-                        "/".join(sorted(BACKENDS))))
+                        "/".join(sorted(ALIASES))))
     ap.add_argument("-s", "--system", default=None,
                     help="system prompt (defaults suit --think automatically)")
     ap.add_argument("-t", "--temperature", type=float, default=None,
@@ -134,19 +113,16 @@ def main():
     if not prompt.strip():
         ap.error("empty prompt")
 
-    cfg = BACKENDS.get(args.model)
-    if cfg is None:
-        cfg = {"api": "ollama", "url": BACKENDS["qwen"]["url"], "model": args.model,
-               "start_hint": "ollama serve   (then: ollama pull {})".format(args.model)}
+    model = ALIASES.get(args.model, args.model)
     try:
-        text, stop_reason = request(cfg, args.system, prompt, args.temperature,
+        text, stop_reason = request(model, args.system, prompt, args.temperature,
                                     args.max_tokens, args.timeout, args.think)
     # HTTPError subclasses URLError, so it must come first: the server was
     # reached and answered with an error, which is not "unreachable".
     except urllib.error.HTTPError as e:
         hint = ""
         if e.code == 404:
-            hint = "\nis the model pulled? try: ollama pull {}".format(cfg["model"])
+            hint = "\nis the model pulled? try: ollama pull {}".format(model)
         elif e.code >= 500:
             hint = ("\nthe server failed mid-request (e.g. it was being upgraded or "
                     "restarted); retrying usually works")
@@ -161,9 +137,9 @@ def main():
             hint = ("the connection was refused by the OS, not by the server: a "
                     "sandbox is blocking localhost. Grant network access and retry.")
         else:
-            hint = "start it with: " + cfg["start_hint"]
+            hint = "start it with: ollama serve   (then: ollama pull {})".format(model)
         fail(2, "cannot reach {} backend at {} ({})\n{}".format(
-            args.model, cfg["url"], reason, hint))
+            args.model, OLLAMA_URL, reason, hint))
 
     # Belt and braces: drop any inline reasoning that slipped through.
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()

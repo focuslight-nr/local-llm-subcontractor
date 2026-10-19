@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """Compare local models on subcontractor-style coding tasks.
 
-Both endpoints speak the OpenAI chat-completions API:
-  - Ollama (qwen3.6:27b):      http://localhost:11434/v1/chat/completions
-  - llama-server (Bonsai):     http://localhost:8080/v1/chat/completions
+Every model is served by Ollama's native chat API (http://localhost:11434/api/chat).
 """
 import json
 import re
@@ -20,19 +18,15 @@ BENCH = Path(__file__).parent
 import os
 
 # Ollama models to bench: comma-separated names in BENCH_OLLAMA_MODELS
-# (default "qwen3.6:27b"). Set BENCH_BONSAI=1 to also bench a Bonsai
-# llama-server at LLM_BONSAI_URL.
+# (default "qwen3.6:27b"), e.g. BENCH_OLLAMA_MODELS=qwen3.6:27b,bonsai-2:27b
 MODELS = {}
-_ollama_base = os.environ.get("LLM_QWEN_URL", "http://localhost:11434")
+_ollama_base = (os.environ.get("LLM_OLLAMA_URL") or os.environ.get("LLM_QWEN_URL")
+                or "http://localhost:11434")
 for _name in os.environ.get("BENCH_OLLAMA_MODELS", "qwen3.6:27b").split(","):
     _name = _name.strip()
     if _name:
         MODELS[_name.replace(":", "-").replace("/", "-")] = {
-            "url": _ollama_base + "/api/chat", "model": _name, "api": "ollama"}
-if os.environ.get("BENCH_BONSAI") == "1":
-    MODELS["bonsai-27b-ternary"] = {
-        "url": os.environ.get("LLM_BONSAI_URL", "http://localhost:8080") + "/v1/chat/completions",
-        "model": "bonsai", "api": "openai"}
+            "url": _ollama_base + "/api/chat", "model": _name}
 
 TARGET_SRC = (BENCH / "target.py").read_text()
 LOG_SRC = (BENCH / "app.log").read_text()
@@ -169,28 +163,19 @@ def chat(cfg: dict, prompt: str, max_tokens: int = None) -> dict:
         {"role": "system", "content": THINKING_SYSTEM if THINK else DIRECT_SYSTEM},
         {"role": "user", "content": prompt},
     ]
-    if cfg["api"] == "ollama":
-        payload = {"model": cfg["model"], "messages": messages, "stream": False, "think": THINK,
-                   "options": {"temperature": TEMPERATURE, "num_predict": max_tokens, "num_ctx": NUM_CTX}}
-    else:
-        payload = {"model": cfg["model"], "messages": messages, "temperature": TEMPERATURE, "max_tokens": max_tokens,
-                   "chat_template_kwargs": {"enable_thinking": THINK}}
+    payload = {"model": cfg["model"], "messages": messages, "stream": False, "think": THINK,
+               "options": {"temperature": TEMPERATURE, "num_predict": max_tokens, "num_ctx": NUM_CTX}}
     req = urllib.request.Request(cfg["url"], data=json.dumps(payload).encode(),
                                  headers={"Content-Type": "application/json"})
     t0 = time.time()
     with urllib.request.urlopen(req, timeout=1800) as r:
         resp = json.load(r)
     dt = time.time() - t0
-    if cfg["api"] == "ollama":
-        msg = resp["message"]
-        text = msg["content"]
-        # With think=true Ollama returns reasoning in a separate field.
-        think_chars = len(msg.get("thinking") or "")
-        ntok = resp.get("eval_count", 0)
-    else:
-        text = resp["choices"][0]["message"]["content"]
-        think_chars = 0
-        ntok = resp.get("usage", {}).get("completion_tokens", 0)
+    msg = resp["message"]
+    text = msg["content"]
+    # With think=true Ollama returns reasoning in a separate field.
+    think_chars = len(msg.get("thinking") or "")
+    ntok = resp.get("eval_count", 0)
     return {"text": text, "seconds": round(dt, 1), "completion_tokens": ntok,
             "think_chars": think_chars,
             "tps": round(ntok / dt, 1) if dt else None}

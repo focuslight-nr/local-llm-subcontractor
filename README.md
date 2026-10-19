@@ -18,7 +18,7 @@
 
 Claude Code や Codex CLI の「下請け」としてローカルLLMを使い、トークン消費(=API課金)を減らすためのワンショット環境構築キットです。
 
-**EN**: One-shot setup for running a local LLM (Qwen3.6-27B via Ollama, or PrismML's Bonsai 2 27B ternary via their llama.cpp fork) as a cheap "subcontractor" for coding agents like Claude Code / Codex CLI. The orchestrator LLM writes a spec, the local model drafts the code, a local test/lint gate filters the output, and the orchestrator only reviews code that already passes. See `docs/` for agent integration.
+**EN**: One-shot setup for running a local LLM (Qwen3.6-27B via Ollama, or PrismML's Bonsai 2 27B ternary, also via Ollama) as a cheap "subcontractor" for coding agents like Claude Code / Codex CLI. The orchestrator LLM writes a spec, the local model drafts the code, a local test/lint gate filters the output, and the orchestrator only reviews code that already passes. See `docs/` for agent integration.
 
 ## コンセプト
 
@@ -49,7 +49,7 @@ note: --model bonsai は現役の選択肢。ただし本機には未インス�
 git clone https://github.com/focuslight-nr/local-llm-subcontractor.git && cd local-llm-subcontractor
 ./setup.sh                 # RAM量から自動でモデルを提案
 ./setup.sh --model qwen    # Qwen3.6-27B Q4 (Ollama, 17GB)
-./setup.sh --model bonsai  # Bonsai 2 27B ternary (llama.cpp fork, 6GB)
+./setup.sh --model bonsai  # Bonsai 2 27B ternary (Ollama, 8.3GB)
 ./setup.sh --model both
 ```
 
@@ -72,7 +72,7 @@ note: 選択基準はRAM。Bonsaiは8〜16GBマシン向けの現役の選択肢
 | | Qwen3.6-27B Q4 | Bonsai 2 27B 三値版 |
 |---|---|---|
 | 必要メモリ | ~17GB(実行時ピーク~20GB) | ~6GB(実行時ピーク~10GB) |
-| ランタイム | Ollama(本家) | **PrismML製llama.cppフォーク必須**(setup.shがコミット固定でビルド) |
+| ランタイム | Ollama(本家) | Ollama(本家、0.40.6以上。2026-10からフォーク不要) |
 | ベース | — | Qwen3.8-27B |
 | 品質(公称) | フル精度の~99% | フル精度の~98%(実測は下記) |
 | 向く用途 | テスト生成・仕様追従コード | 思考モード(`--think`)での汎用委譲 |
@@ -135,6 +135,33 @@ note: 測定値は有効。推奨のみ第2段タスクの結果で覆り、既�
 
 再現手順: `BENCH_OLLAMA_MODELS=qwen3.6:27b,qwen3.6:35b-a3b python3 bench/run_bench.py`
 
+### Bonsai 2 がOllamaに載り、フォークのビルドが不要に(2026-10-19)
+
+<!-- meta
+kind: record, directive
+measured: 2026-10-19
+subjects: bonsai-2:27b
+verdict: setup.sh --model bonsai を `ollama pull bonsai-2:27b` に置き換え。フォークのビルド・bin/serve-bonsai を廃止
+status: current
+installed: false(本機では評価後に削除。48GB機ではqwen/Ornithが上回るため)
+note: 下の9月の節(フォーク版)の判断を置き換える
+-->
+
+PrismMLの Bonsai 2 が Ollama公式ライブラリに `bonsai-2:27b`(8.3GB)として載りました。
+フォーク版と同じ6タスクで測り、品質が変わらないことを確かめたうえで、キットを切り替えました。
+
+| | Ollama版(2026-10) | フォーク版(2026-09) |
+|---|---|---|
+| 直答 | 3/6 | 3/6 |
+| 思考(temp 1.0) | 5/6・1,480秒 | 5/6・2,099秒 |
+
+品質は同じで、思考モードは約3割速くなりました。失点の傾向も同じで、CSVパーサは
+直答・思考とも**書き終わる前にトークン上限に達して**コードが出ていません。
+引き続き **`--think` での利用を推奨**します(`bin/llm -m bonsai --think`)。
+
+これで setup.sh は第三者コードをビルドしなくなりました。`bin/serve-bonsai` と、
+`bin/llm`・ベンチにあった llama-server 経由の経路も削除し、すべてOllamaに一本化しています。
+
 ### Bonsai 2 への切り替えと、壊れていた setup.sh(2026-09-18)
 
 <!-- meta
@@ -142,7 +169,8 @@ kind: record, directive
 measured: 2026-09-18
 subjects: bonsai-2-27b-ternary(PTQ1_0), bonsai-27b-ternary(PQ2_0)
 verdict: setup.sh --model bonsai を Bonsai 2 に切り替え。フォークをコミット固定
-status: current
+status: superseded
+superseded_by: Bonsai 2 がOllamaに載り、フォークのビルドが不要に(2026-10-19)
 installed: false(本機では評価後に削除。48GB機ではqwen/Ornithが上回るため)
 note: 旧 setup.sh は新規インストールで読み込みに失敗する状態だった
 -->
@@ -509,13 +537,12 @@ diffを取らなければ気づけませんでした。
 ```
 setup.sh            # 環境構築(macOS / Linux, 冪等)
 bin/llm             # 下請け呼び出しCLI(stdin/引数 → 応答をstdout)
-bin/serve-bonsai    # Bonsai用llama-server起動
 bench/              # 自動採点ベンチ(モデル追加時の品質確認用)
 docs/claude-code.md # Claude Code への組み込み手順(CLAUDE.mdスニペット付き)
 docs/codex.md       # Codex CLI への組み込み手順(AGENTS.mdスニペット付き)
 ```
 
-インストール先はデフォルト `~/local-llm`(`--dir` か環境変数 `LLM_HOME` で変更可)。モデル本体・ビルド成果物はリポジトリ外に置かれます。
+モデルはどちらもOllamaの保存領域に置かれます。`~/local-llm`(`--dir` か `LLM_HOME` で変更可)には、setup.shがOllamaを起動した場合のログだけが置かれます。
 
 ## 重要な注意
 
@@ -526,7 +553,7 @@ note: 運用上の必須事項。特定の測定日に紐づかない
 -->
 
 - **thinkingの無効化**: Qwen3.6もBonsaiもthinkingモデルです。無効化しないと思考だけでトークン上限を使い切り、本体の回答が届きません。`bin/llm` は両バックエンドで無効化済み(Ollama: `think: false` / llama-server: `chat_template_kwargs.enable_thinking: false`)。
-- **Bonsaiは本家llama.cpp/Ollamaでは動きません**。独自量子化(PTQ1_0 / PQ2_0)のため、PrismML公式のllama.cppフォーク(github.com/PrismML-Eng/llama.cpp)のビルドが必要です。モデル配布元が案内する正規ランタイムですが、本家よりコミュニティ監査が薄い第三者コードをビルド・実行することは理解した上で選んでください(`setup.sh` も確認を求めます)。
+- **Bonsai 2 はOllamaで動きます(0.40.6以上)**。2026-10にOllama公式ライブラリに載ったため、以前必要だったPrismMLのllama.cppフォークのビルドは不要になりました。古い版のサーバーが動いたままだとpullが「newer version of Ollama」で失敗するので、更新後は必ずサーバーを再起動してください(macOS: `brew services restart ollama`)。
 - **Ollamaのコンテキスト長**: デフォルトが短いため、`bin/llm` はリクエスト毎に `num_ctx` を指定しています。エージェントのモデルを丸ごと差し替える場合(docs参照)は `OLLAMA_CONTEXT_LENGTH=65536` 以上を推奨。
 
 ## License
