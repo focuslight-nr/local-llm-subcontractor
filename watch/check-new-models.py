@@ -124,6 +124,8 @@ def bench(tag, think):
 
 
 NEEDS_UPGRADE = "needs a newer Ollama (brew upgrade ollama && brew services restart ollama)"
+RUNTIME_FAILURE = ("pulled, but every request failed - usually the runtime does not support "
+                   "the model yet (brew upgrade ollama && brew services restart ollama)")
 
 
 # Models that only pick among answers you supply (routing, policy checks) rather
@@ -189,6 +191,15 @@ def evaluate(name):
 
     log(f"  {tag}: benching (direct)")
     direct_out, direct = bench(tag, think=False)
+    # A model can pull fine and still not run: nemotron-3.5-bolt failed every
+    # request with HTTP 500 because Ollama's Metal backend lacked a kernel for
+    # its expert layout. That is not a 0/6 result; it is "not evaluated yet",
+    # and should be retried once Ollama is upgraded.
+    failures = re.findall(r"request failed: (.+?) \(", direct_out)
+    if direct and len(failures) == len(direct):
+        err = f"{RUNTIME_FAILURE}: {failures[0]}"
+        log(f"  {name}: {err}")
+        return {"tag": tag, "gb": gb, "error": err}
     log(f"  {tag}: direct {sum(int(v) for v in direct.values())}/{len(direct)}")
 
     log(f"  {tag}: benching (thinking)")
@@ -303,6 +314,8 @@ def check_ollama():
         path = write_report(results)
         summary = "; ".join(
             f"{r['tag']}: " + (r.get("error") and ("needs newer Ollama" if r["error"] == NEEDS_UPGRADE
+                                                    else "cannot run yet, will retry"
+                                                    if r["error"].startswith(RUNTIME_FAILURE)
                                                     else "pull failed, will retry") or
                                f"{sum(int(v) for v in r['thinking'].values())}/6 thinking")
             for r in results)
