@@ -132,7 +132,9 @@ NEEDS_UPGRADE = "needs a newer Ollama (brew upgrade ollama && brew services rest
 # give nothing away (clef, nimble, tev1).
 NON_GENERATIVE = re.compile(
     r"decision model|into decisions|typed questions|"
-    r"\bfor (?:fast |typed )*classification|classification model|\bclassifier\b",
+    r"\bfor (?:fast |typed )*classification|classification model|\bclassifier\b|"
+    # kev: "scores answers to structured questions about a supplied text state"
+    r"scores? answers|structured questions|supplied (?:text )?state",
     re.I)
 
 
