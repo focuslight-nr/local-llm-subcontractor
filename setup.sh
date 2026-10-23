@@ -2,14 +2,16 @@
 # local-llm-subcontractor setup
 #
 # Usage:
-#   ./setup.sh [--model qwen|bonsai|both] [--dir PATH] [--yes]
+#   ./setup.sh [--model flint|qwen|bonsai|both] [--dir PATH] [--yes]
 #
-#   --model   Which backend to install (default: suggest from RAM size)
+#   --model   Which model to install; "both" = flint + bonsai
+#             (default: suggest from RAM size)
 #   --dir     Where to keep the Ollama log if this script starts the server
 #             (default: ~/local-llm, or $LLM_HOME). Models live in Ollama's own store.
 #   --yes     Non-interactive: accept all confirmations
 set -euo pipefail
 
+FLINT_MODEL="${FLINT_MODEL:-flint:latest}"  # the default; needs Ollama >= 0.40.8
 QWEN_MODEL="${QWEN_MODEL:-qwen3.6:27b}"   # override e.g. QWEN_MODEL=qwen3.6:35b-a3b (needs ~32GB+ RAM)
 # Bonsai 2 (PrismML's ternary build of Qwen3.8-27B) ships in the Ollama library
 # since Oct 2026, so it no longer needs PrismML's llama.cpp fork built from source.
@@ -56,15 +58,15 @@ ram_gb() {
 # --- pick model from RAM if not specified -----------------------------------
 RAM="$(ram_gb)"
 if [[ -z "$MODEL" ]]; then
-  if (( RAM >= 32 )); then MODEL=qwen; else MODEL=bonsai; fi
+  if (( RAM >= 32 )); then MODEL=flint; else MODEL=bonsai; fi
   info "RAM ${RAM}GB detected -> suggesting model: $MODEL"
   if [[ $ASSUME_YES -eq 0 ]]; then
-    read -r -p "Install '$MODEL'? (qwen/bonsai/both) [$MODEL] " ans
+    read -r -p "Install '$MODEL'? (flint/qwen/bonsai/both) [$MODEL] " ans
     MODEL="${ans:-$MODEL}"
   fi
 fi
-case "$MODEL" in qwen|bonsai|both) ;; *) die "invalid --model: $MODEL" ;; esac
-if [[ "$MODEL" != "qwen" ]] && (( RAM < 12 )); then
+case "$MODEL" in flint|qwen|bonsai|both) ;; *) die "invalid --model: $MODEL" ;; esac
+if [[ "$MODEL" == "bonsai" || "$MODEL" == "both" ]] && (( RAM < 12 )); then
   warn "RAM ${RAM}GB is tight even for Bonsai (needs ~10GB at 32K context)."
 fi
 
@@ -125,6 +127,14 @@ ollama_pull() {
   fi
 }
 
+# --- flint (default) ----------------------------------------------------------
+setup_flint() {
+  ensure_ollama
+  info "pulling $FLINT_MODEL (~22GB, skips if up to date)"
+  warn "flint needs Ollama >= 0.40.8; an older one rejects the pull with HTTP 412."
+  ollama_pull "$FLINT_MODEL"
+}
+
 # --- qwen ---------------------------------------------------------------------
 setup_qwen() {
   ensure_ollama
@@ -143,10 +153,12 @@ setup_bonsai() {
   fi
 }
 
-[[ "$MODEL" == "qwen"   || "$MODEL" == "both" ]] && setup_qwen
+[[ "$MODEL" == "flint"  || "$MODEL" == "both" ]] && setup_flint
+[[ "$MODEL" == "qwen" ]] && setup_qwen
 [[ "$MODEL" == "bonsai" || "$MODEL" == "both" ]] && setup_bonsai
 
 info "done. smoke test:"
-[[ "$MODEL" != "bonsai" ]] && echo "  echo 'Reply with exactly: OK' | $(dirname "$0")/bin/llm -m qwen"
-[[ "$MODEL" != "qwen"   ]] && echo "  echo 'Reply with exactly: OK' | $(dirname "$0")/bin/llm -m bonsai --think"
+[[ "$MODEL" == "flint" || "$MODEL" == "both" ]] && echo "  echo 'Reply with exactly: OK' | $(dirname "$0")/bin/llm"
+[[ "$MODEL" == "qwen" ]] && echo "  echo 'Reply with exactly: OK' | $(dirname "$0")/bin/llm -m qwen"
+[[ "$MODEL" == "bonsai" || "$MODEL" == "both" ]] && echo "  echo 'Reply with exactly: OK' | $(dirname "$0")/bin/llm -m bonsai"
 echo "Agent integration: docs/claude-code.md / docs/codex.md"

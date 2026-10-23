@@ -2,7 +2,7 @@
 """Send a prompt to a local LLM subcontractor and print the reply to stdout.
 
 Usage:
-  echo "prompt" | llm -m qwen
+  echo "prompt" | llm                          # flint, the default
   llm -m qwen3.6:35b-a3b "Write a slugify function in Python. Output only code."
   llm -m qwen -s "You output only JSON." < input.txt
   llm -m ornith-1.5:35b --think < tricky_spec.md   # reason first, then answer
@@ -23,6 +23,7 @@ it switched on automatically; --no-think forces it off for diagnosis.
 
 All models are served by Ollama (LLM_OLLAMA_URL, default http://localhost:11434;
 LLM_QWEN_URL is still honoured). Aliases (override the model with env vars):
+  flint   LLM_FLINT_MODEL  (default flint:latest) - used when -m is omitted
   qwen    LLM_QWEN_MODEL   (default qwen3.6:27b)
   bonsai  LLM_BONSAI_MODEL (default bonsai-2:27b; use with --think)
   <other> treated as an Ollama model name (e.g. qwen3.6:35b-a3b)
@@ -40,6 +41,7 @@ OLLAMA_URL = os.environ.get("LLM_OLLAMA_URL") or os.environ.get("LLM_QWEN_URL") 
     or "http://localhost:11434"
 
 ALIASES = {
+    "flint": os.environ.get("LLM_FLINT_MODEL", "flint:latest"),
     "qwen": os.environ.get("LLM_QWEN_MODEL", "qwen3.6:27b"),
     "bonsai": os.environ.get("LLM_BONSAI_MODEL", "bonsai-2:27b"),
 }
@@ -91,7 +93,7 @@ def http_error_detail(e):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("-m", "--model", default=os.environ.get("LLM_DEFAULT", "qwen"),
+    ap.add_argument("-m", "--model", default=os.environ.get("LLM_DEFAULT", "flint"),
                     help="backend alias ({}) or any Ollama model name".format(
                         "/".join(sorted(ALIASES))))
     ap.add_argument("-s", "--system", default=None,
