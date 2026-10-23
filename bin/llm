@@ -18,7 +18,8 @@ Exit codes (anything non-zero means no usable answer, and stdout is empty):
 Thinking is off by default: it costs several times the wall-clock and, at small
 output budgets, can consume the whole allowance before answering. Use --think for
 fiddly specs that direct answering gets wrong (it raises the token budget and
-temperature to match).
+temperature to match). Models that cannot answer without it (flint, bonsai-2) get
+it switched on automatically; --no-think forces it off for diagnosis.
 
 All models are served by Ollama (LLM_OLLAMA_URL, default http://localhost:11434;
 LLM_QWEN_URL is still honoured). Aliases (override the model with env vars):
@@ -42,6 +43,12 @@ ALIASES = {
     "qwen": os.environ.get("LLM_QWEN_MODEL", "qwen3.6:27b"),
     "bonsai": os.environ.get("LLM_BONSAI_MODEL", "bonsai-2:27b"),
 }
+
+# Models that reason whatever we ask: with thinking off that reasoning is
+# discarded but still spends the output budget, so a real task ends with an
+# empty answer (a one-line prompt may squeeze through). Thinking is therefore
+# turned on for them unless --no-think is given. Matched by name prefix.
+THINKING_REQUIRED = ("flint", "bonsai-2")
 
 DEFAULT_SYSTEM = ("You are a precise coding assistant. Follow output format "
                   "instructions exactly. Do not think step by step; answer directly.")
@@ -93,13 +100,22 @@ def main():
                     help="sampling temperature (default 0.2, or 1.0 with --think)")
     ap.add_argument("--think", action="store_true",
                     help="let the model reason before answering: slower, but it "
-                         "solves fiddly specs that direct answering gets wrong")
+                         "solves fiddly specs that direct answering gets wrong "
+                         "(already on for {})".format("/".join(THINKING_REQUIRED)))
+    ap.add_argument("--no-think", dest="no_think", action="store_true",
+                    help="force thinking off, even for a model that needs it "
+                         "(expect an empty answer: for diagnosis only)")
     ap.add_argument("--max-tokens", type=int, default=None,
                     help="output cap (default 4000, or 12000 with --think, since "
                          "reasoning draws from the same budget)")
     ap.add_argument("--timeout", type=int, default=1800)
     ap.add_argument("prompt", nargs="*", help="prompt text (reads stdin if omitted)")
     args = ap.parse_args()
+
+    model = ALIASES.get(args.model, args.model)
+    if not args.think and not args.no_think \
+            and model.startswith(THINKING_REQUIRED):
+        args.think = True
 
     # Thinking needs its own defaults; explicit flags still win.
     if args.system is None:
@@ -113,7 +129,6 @@ def main():
     if not prompt.strip():
         ap.error("empty prompt")
 
-    model = ALIASES.get(args.model, args.model)
     try:
         text, stop_reason = request(model, args.system, prompt, args.temperature,
                                     args.max_tokens, args.timeout, args.think)
