@@ -25,7 +25,9 @@ Procedure:
    to use only names in the spec and to write `# MISSING: <what>` instead of
    guessing; on a MISSING marker, add the definition and resend (this does not
    count as a retry).
-2. Pipe it to `<REPO_PATH>/bin/llm -m qwen`.
+2. Pipe it to `<REPO_PATH>/bin/llm` (defaults to flint, which reasons before
+   answering; the wrapper turns that on for you). `-m qwen3.6:35b-a3b` is for
+   summarizing/extraction only, never code generation.
 3. Gate the output locally: pytest/lint for code, JSON validation for extraction.
 4. On failure, retry via the local LLM with the error attached (max 2 retries).
 5. Review only gated output yourself.

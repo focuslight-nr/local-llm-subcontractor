@@ -5,7 +5,7 @@ Usage:
   echo "prompt" | llm                          # flint, the default
   llm -m qwen3.6:35b-a3b "Write a slugify function in Python. Output only code."
   llm -m qwen -s "You output only JSON." < input.txt
-  llm -m ornith-1.5:35b --think < tricky_spec.md   # reason first, then answer
+  llm --no-think < spec.md                      # direct answer (diagnosis only)
 
 -m accepts an alias (below) or any Ollama model name directly.
 
