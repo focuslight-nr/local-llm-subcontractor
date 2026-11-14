@@ -108,7 +108,7 @@ def main():
                     help="force thinking off, even for a model that needs it "
                          "(expect an empty answer: for diagnosis only)")
     ap.add_argument("--max-tokens", type=int, default=None,
-                    help="output cap (default 4000, or 12000 with --think, since "
+                    help="output cap (default 4000, or 20000 with --think, since "
                          "reasoning draws from the same budget)")
     ap.add_argument("--timeout", type=int, default=1800)
     ap.add_argument("prompt", nargs="*", help="prompt text (reads stdin if omitted)")
@@ -125,7 +125,10 @@ def main():
     if args.temperature is None:
         args.temperature = 1.0 if args.think else 0.2
     if args.max_tokens is None:
-        args.max_tokens = 12000 if args.think else 4000
+        # Measured 2026-11-14: flint spends up to ~37,800 characters (~9,500
+        # tokens) reasoning on a fiddly parsing spec, and a 12,000 budget cut
+        # the answer off after the reasoning. Leave room for both.
+        args.max_tokens = 20000 if args.think else 4000
 
     prompt = " ".join(args.prompt) if args.prompt else sys.stdin.read()
     if not prompt.strip():
