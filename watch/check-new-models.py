@@ -9,6 +9,12 @@ Runs unattended (launchd). Each pass:
 Deliberately conservative: it skips embedding/audio/vision-only models, caps how
 much it downloads per run, and refuses to start when the disk is low.
 
+It also re-checks every model already installed against the registry. A tag can
+be rebuilt upstream under the same name (new weights, new configs, or a new
+runner via a manifest list), and the library diff above never sees that. These
+are reported only, never auto-pulled: re-pulling changes the live model, and the
+rule here is to bench before trusting it.
+
 It also watches PrismML's Hugging Face org for new Bonsai GGUFs. Those never
 reach the Ollama library (they need PrismML's llama.cpp fork), so they are
 reported only: evaluating one means building third-party code, possibly at a
@@ -16,6 +22,7 @@ newer fork commit than setup.sh pins, and that should not happen unattended.
 
 State and reports live in ~/.local/state/llm-model-watch/.
 """
+import hashlib
 import html as htmllib
 import json
 import os
@@ -32,6 +39,14 @@ STATE = Path.home() / ".local/state/llm-model-watch"
 SNAPSHOT = STATE / "library.json"
 PRISM_SNAPSHOT = STATE / "prismml.json"
 PENDING = STATE / "pending.json"       # models seen but not yet evaluated
+INSTALLED = STATE / "installed.json"   # upstream digests already reported
+OLLAMA_API = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+if not OLLAMA_API.startswith("http"):
+    OLLAMA_API = "http://" + OLLAMA_API
+MODELS_DIR = Path(os.environ.get("OLLAMA_MODELS", Path.home() / ".ollama/models"))
+REGISTRY = "https://registry.ollama.ai/v2"
+LIST_TYPE = "application/vnd.ollama.manifest.list.v2+json"
+MANIFEST_TYPE = "application/vnd.docker.distribution.manifest.v2+json"
 LOG = STATE / "watch.log"
 REPORTS = STATE / "reports"
 BENCH = Path.home() / "GitHub/local-llm/bench/run_bench.py"
@@ -116,8 +131,10 @@ def bench(tag, think):
     """Run the full suite; return (raw stdout, parsed {task: score})."""
     env = {"BENCH_OLLAMA_MODELS": tag}
     if think:
+        # 20000, not 12000: reasoning and answer share the budget, and flint was
+        # measured spending ~11,400 tokens on reasoning alone (2026-11-19).
         env |= {"BENCH_THINK": "1", "BENCH_TEMPERATURE": "0.6",
-                "BENCH_MAX_TOKENS": "12000", "BENCH_NUM_CTX": "32768"}
+                "BENCH_MAX_TOKENS": "20000", "BENCH_NUM_CTX": "32768"}
     r = run([sys.executable, str(BENCH)], timeout=7200, env=env)
     scores = dict(re.findall(r"=== \S+ / (\S+) ===\n\s+score=(\d)", r.stdout))
     return r.stdout, scores
@@ -324,6 +341,118 @@ def check_ollama():
     return 0
 
 
+def registry_get(path, accept=None):
+    headers = {"User-Agent": "llm-model-watch/1"}
+    if accept:
+        headers["Accept"] = accept
+    req = urllib.request.Request(f"{REGISTRY}/{path}", headers=headers)
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return r.read(), r.headers.get("Content-Type", "")
+
+
+def split_name(name):
+    """'qwen3.6:27b' -> ('library/qwen3.6', '27b'); 'ns/model:tag' -> ('ns/model', 'tag')."""
+    repo, _, tag = name.partition(":")
+    return (repo if "/" in repo else f"library/{repo}"), (tag or "latest")
+
+
+def local_manifest(repo, tag):
+    p = MODELS_DIR / "manifests/registry.ollama.ai" / repo / tag
+    return json.loads(p.read_text()) if p.exists() else None
+
+
+def local_runner(manifest, digest):
+    """Which runner the installed copy is: read from the manifest list Ollama
+    keeps as a layer when it resolved one. None for a single-format pull."""
+    for layer in (manifest or {}).get("layers", []):
+        if layer["mediaType"] == LIST_TYPE:
+            blob = MODELS_DIR / "blobs" / layer["digest"].replace(":", "-")
+            for entry in json.loads(blob.read_text()).get("manifests", []):
+                if entry["digest"] == digest:
+                    return entry.get("runner")
+    return None
+
+
+def layer_diff(old, new):
+    """Summarise what a rebuild touched: weights or only configs."""
+    o = {l["digest"]: l for l in old.get("layers", [])}
+    n = {l["digest"]: l for l in new.get("layers", [])}
+    added = [n[d] for d in n.keys() - o.keys()]
+    tensor_bytes = sum(l["size"] for l in added if "tensor" in l["mediaType"])
+    other = sum(1 for l in added if "tensor" not in l["mediaType"]
+                and "manifest" not in l["mediaType"])
+    if tensor_bytes:
+        return f"weights changed ({tensor_bytes / 1024**3:.1f} GB of tensors), {other} other files"
+    return f"weights identical, {other} config/tokenizer files changed"
+
+
+def check_installed():
+    """Report installed tags whose upstream manifest no longer matches."""
+    with urllib.request.urlopen(f"{OLLAMA_API}/api/tags", timeout=30) as r:
+        models = json.loads(r.read())["models"]
+    seen = json.loads(INSTALLED.read_text()) if INSTALLED.exists() else {}
+    changed = []
+    for m in models:
+        name, digest = m["name"], "sha256:" + m["digest"].removeprefix("sha256:")
+        if name.endswith(":cloud") or "-cloud" in name or m.get("remote_host"):
+            continue
+        repo, tag = split_name(name)
+        try:
+            body, ctype = registry_get(f"{repo}/manifests/{tag}", f"{LIST_TYPE}, {MANIFEST_TYPE}")
+        except Exception as e:
+            log(f"installed: {name}: registry lookup failed: {type(e).__name__}: {e}")
+            continue
+        mine = local_manifest(repo, tag)
+        runner = local_runner(mine, digest)
+        if LIST_TYPE in ctype:
+            entries = json.loads(body).get("manifests", [])
+            if any(e["digest"] == digest for e in entries):
+                continue
+            match = [e for e in entries if runner and e.get("runner") == runner]
+            if match:
+                upstream, why = match[0]["digest"], f"{runner} build rebuilt"
+            else:
+                runners = "+".join(e.get("runner", "?") for e in entries)
+                upstream = "sha256:" + hashlib.sha256(body).hexdigest()
+                why = f"now a manifest list ({runners}); re-pulling may switch runner"
+            try:
+                new_manifest = json.loads(registry_get(f"{repo}/blobs/{upstream}")[0]) if match else None
+            except Exception:
+                new_manifest = None
+        else:
+            upstream = "sha256:" + hashlib.sha256(body).hexdigest()
+            if upstream == digest:
+                continue
+            why, new_manifest = "rebuilt", json.loads(body)
+        if seen.get(name) == upstream:
+            continue                      # already reported this rebuild
+        detail = layer_diff(mine, new_manifest) if (mine and new_manifest) else "contents not compared"
+        changed.append((name, digest[7:19], upstream[7:19], why, detail))
+        seen[name] = upstream
+
+    INSTALLED.write_text(json.dumps(seen, indent=1))
+    if not changed:
+        log(f"installed: no new rebuilds ({len(models)} tags checked, {len(seen)} already reported)")
+        return 0
+
+    REPORTS.mkdir(parents=True, exist_ok=True)
+    path = REPORTS / f"{datetime.now():%Y-%m-%d}.md"
+    fresh = not path.exists()
+    with path.open("a") as f:
+        if fresh:
+            f.write(f"# Model watch {datetime.now():%Y-%m-%d}\n\n")
+        f.write("## Installed models rebuilt upstream (not re-pulled)\n\n"
+                "| model | installed | upstream | what | contents |\n|---|---|---|---|---|\n")
+        for row in changed:
+            f.write("| " + " | ".join(row) + " |\n")
+        f.write("\nThe installed copy is unchanged. Re-pulling replaces it under the same name,\n"
+                "so bench the new build before relying on it (see the README's runtime rule).\n\n")
+    for name, old, new, why, detail in changed:
+        log(f"installed: {name} {old} -> {new}: {why}; {detail}")
+    notify("Installed model rebuilt upstream", ", ".join(c[0] for c in changed))
+    return 0
+
+
 def prismml_repos():
     """All model repos in the prism-ml HF org, newest first (so a new one is
     always inside the page even if older ones fall off the end)."""
@@ -376,7 +505,7 @@ def main():
     STATE.mkdir(parents=True, exist_ok=True)
     rc = 0
     # Independent sources: one failing must not stop the other.
-    for check in (check_ollama, check_prismml):
+    for check in (check_ollama, check_installed, check_prismml):
         try:
             rc |= check() or 0
         except Exception as e:
