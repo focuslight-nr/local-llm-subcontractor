@@ -343,7 +343,7 @@ measured: 2026-11-22(Ollama 0.40.17)
 subjects: inkling-2-mini:latest(nvfp4, MLX), flint:latest, qwen3.6:35b-a3b
 verdict: inkling は不採用(最良条件 6/6 だが 583秒、flint は 210秒)。0.40.17 で flint 6/6・a3b 5/6 と変化なし
 status: current
-installed: inkling-2-mini = true(判断待ち)
+installed: inkling-2-mini = false(2026-11-22 削除)
 -->
 
 Thinking Machines製、Apache 2.0、20GB。watcherが当日3:19に検出したものの Ollama 0.40.17 が必要で
