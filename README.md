@@ -343,7 +343,7 @@ measured: 2026-11-22(Ollama 0.40.16)
 subjects: flint:latest(digest 4a4aceea5490 → b59e9bfcf77d)
 verdict: 更新して据え置き。6/6・264秒
 status: current
-installed: flint:latest = b59e9bfcf77d(既定), flint:pre-20261121 = 旧版(重み共有)
+installed: flint:latest = b59e9bfcf77d(既定)。旧版は 2026-11-22 に削除
 -->
 
 watcherに足した[入れてあるモデルの照合](watch/README.md)が、初回で既定モデルの差し替えを
@@ -355,7 +355,7 @@ watcherに足した[入れてあるモデルの照合](watch/README.md)が、初
 - tokenizer_config から `chat_template` 削除(Ollamaは自前のflintレンダラを使うので影響なし)
 
 終了トークンが増えると生成の止まり方が変わり得るので、原則どおり測ってから採用しました。
-旧版は `flint:pre-20261121` として残してあります(重みのblobを共有するので追加容量なし)。
+旧版は `flint:pre-20261121` として一時的に残し、問題が出なかったので削除しました。
 
 | タスク | 結果 | 時間 | 思考 |
 |---|---|---|---|
