@@ -148,6 +148,12 @@ TEMPERATURE = float(os.environ.get("BENCH_TEMPERATURE", "0.2"))
 # Set BENCH_THINK=1 to measure a model in the mode its vendor recommends — raise
 # BENCH_MAX_TOKENS / BENCH_NUM_CTX too, since reasoning consumes the same budget.
 THINK = os.environ.get("BENCH_THINK") == "1"
+# Some models take a reasoning level instead of on/off (inkling-2-mini: none, minimal,
+# low, medium, high, xhigh, max; default high). BENCH_THINK_LEVEL=medium sends that
+# string as Ollama's `think` value and implies BENCH_THINK=1.
+THINK_LEVEL = os.environ.get("BENCH_THINK_LEVEL") or None
+if THINK_LEVEL:
+    THINK = True
 MAX_TOKENS = int(os.environ.get("BENCH_MAX_TOKENS", "4000"))
 NUM_CTX = int(os.environ.get("BENCH_NUM_CTX", "16384"))
 
@@ -163,7 +169,7 @@ def chat(cfg: dict, prompt: str, max_tokens: int = None) -> dict:
         {"role": "system", "content": THINKING_SYSTEM if THINK else DIRECT_SYSTEM},
         {"role": "user", "content": prompt},
     ]
-    payload = {"model": cfg["model"], "messages": messages, "stream": False, "think": THINK,
+    payload = {"model": cfg["model"], "messages": messages, "stream": False, "think": THINK_LEVEL or THINK,
                "options": {"temperature": TEMPERATURE, "num_predict": max_tokens, "num_ctx": NUM_CTX}}
     req = urllib.request.Request(cfg["url"], data=json.dumps(payload).encode(),
                                  headers={"Content-Type": "application/json"})

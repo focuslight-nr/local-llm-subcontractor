@@ -232,7 +232,7 @@ def write_report(results):
     path = REPORTS / f"{datetime.now():%Y-%m-%d}.md"
     with path.open("w") as f:
         f.write(f"# New models benchmarked {datetime.now():%Y-%m-%d}\n\n")
-        f.write("Baseline: qwen3.6:27b scores 6/6 direct in ~275s.\n")
+        f.write("Baseline: flint:latest (the default) scores 6/6 thinking in ~210-265s.\n")
         f.write("Thinking runs use temperature 0.6 — check the vendor's own\n"
                 "recommendation before drawing conclusions.\n\n")
         for res in results:
